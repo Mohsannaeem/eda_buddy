@@ -1,0 +1,71 @@
+# EDA Buddy Runtime YAML — test list, groups, and simulation settings
+# See README.md for full field descriptions
+
+runtime:
+  common_args:                          # UVM plusargs passed to every test
+  - +UVM_VERBOSITY=UVM_MEDIUM
+  - +UVM_MAX_QUIT_COUNT=10
+  - +UVM_TIMEOUT=100000000             # 100 µs in ps (with 1ns/1ps timescale)
+
+  tool_args:
+    questa:
+    - -batch
+    - -do 'run -all; quit'
+    vcs:
+    - -l simv.log
+    xcelium:
+    - -run
+
+  debug:
+    gui_mode:    false
+    dump_waves:  false                  # set true to enable waveform dump
+    wave_format: fsdb
+    quiet_sim:   false                  # true = suppress sim output in terminal
+
+test_config:
+  active_test: my_sanity_test
+  entry_points:
+  - name: my_sanity_test
+    description: "Basic sanity — zero back-pressure"
+    seed: random
+    user_args: []
+
+  - name: my_backpressure_test
+    description: "Fixed 8-cycle back-pressure"
+    seed: random
+    user_args: ["+BP_CYCLES=8"]
+
+  - name: my_stress_test
+    description: "Random duty-cycle stress"
+    seed: random
+    user_args: []
+
+  - name: my_error_test
+    description: "Negative test — expects UVM_ERROR"
+    seed: 99999
+    user_args: ["+INJECT_ERROR=1"]
+
+# Per-component simulation hooks (run before/after EACH individual sim)
+hooks:
+  pre:  ""
+  post: ""
+
+# Regression groups — run a named subset of tests together.
+# Each run creates a timestamped session directory under <RUN_DIR>/<group>_<ts>/
+#
+# regression_post_hook: called ONCE after the whole group finishes.
+# Placeholders {total}, {passed}, {failed} are replaced with actual results.
+# Leave regression_post_hook out (or blank) if you don't need RMS integration.
+groups:
+  smoke_test:
+    tests:
+    - my_sanity_test
+    - my_backpressure_test
+
+  regression:
+    regression_post_hook: "python /path/to/eda_buddy/scripts/push_result.py --id MY_VIP_REGRESSION --total {total} --passed {passed} --failed {failed}"
+    tests:
+    - my_sanity_test
+    - my_backpressure_test
+    - my_stress_test
+    - my_error_test

@@ -1,0 +1,25 @@
+# EDA Buddy Project Structure — edit this file for your project
+# Run: python eda_buddy.py --gen-makefile
+
+project_name: MY_PROJECT
+
+paths:
+  root:      /path/to/your/run         # ALL generated artifacts (Makefile, logs, filelists) go here
+  filelists: filelists                  # relative to root
+  makefile:  .                          # relative to root  (. = root itself)
+
+# Global hooks — run before/after EVERY build and simulation across all components.
+# Leave blank ("") to skip.
+hooks:
+  pre:  ""                              # e.g. "source /tools/questa_2023/setup.sh"
+  post: ""
+
+components:
+- name: my_vip                          # short name used as Makefile target prefix
+  build_cfg:   /path/to/tb/yamls/my_vip_build.yaml
+  runtime_cfg: /path/to/tb/yamls/my_vip_run.yaml
+
+# Add more components here:
+# - name: my_second_vip
+#   build_cfg:   /path/to/second_vip/yamls/build.yaml
+#   runtime_cfg: /path/to/second_vip/yamls/run.yaml

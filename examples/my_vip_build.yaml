@@ -1,0 +1,72 @@
+# EDA Buddy Build YAML — compile and elaborate settings for one component
+# See README.md for full field descriptions
+
+project:
+  name:        my_vip_tb
+  top_module:  my_vip_tb_top
+  timescale:   1ns/1ps
+  uvm_version: "1.2"
+
+paths:
+  root_dir: /path/to/my_vip_tb         # TB source root (where .sv/.svh files live)
+
+compilation:
+  include_dirs:                         # +incdir+ paths — relative to root_dir
+  - env
+  - sequences
+  - agent
+  - top
+
+  defines:                              # +define+ macros
+  - MY_VIP_INTERFACE_V1_0
+  - UVM_NO_DEPRECATED
+
+  sources:                              # source files — relative to root_dir
+    interfaces:
+    - top/my_vip_if.sv
+
+    packages:
+    - top/my_vip_pkg.sv
+
+    modules:
+    - top/my_vip_tb_top.sv
+
+    dut: []                             # leave empty for VIP-only testbenches
+
+# Per-component build hooks (run before/after THIS component's compile+elaborate only)
+hooks:
+  pre:  ""
+  post: ""
+
+tool_settings:
+  questa:
+    compile_flags:
+    - -sv
+    - -mfcu
+    - -timescale
+    - 1ns/1ps
+    elaborate_flags:
+    - vopt +acc ${project.top_module} -o db_opt
+    coverage_flags:
+    - -coverage
+    notes: "Do NOT pass uvm_pkg.sv — use QuestaSim built-in UVM (avoids DPI GCC runtime error)"
+
+  vcs:
+    compile_flags:
+    - -sverilog
+    - -full64
+    - -debug_access+all
+    - -lca
+    - -kdb
+    - +v2k
+    elaborate_flags:
+    - -top ${project.top_module}
+    coverage_flags:
+    - -cm line+cond+fsm+tgl+path
+
+  xcelium:
+    compile_flags:
+    - -sv
+    - -uvm
+    elaborate_flags:
+    - -top ${project.top_module}
