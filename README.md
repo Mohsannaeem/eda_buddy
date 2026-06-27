@@ -1,5 +1,7 @@
 # EDA Buddy — UVM Simulation Manager
 
+> Standalone tool repository: [github.com/Mohsannaeem/eda_buddy](https://github.com/Mohsannaeem/eda_buddy)
+
 EDA Buddy turns YAML configuration files into a fully working Makefile for compiling and running SystemVerilog/UVM testbenches. It supports **Questa**, **VCS**, and **Xcelium** simulators.
 
 You write two small YAML files per component (one for build, one for tests). EDA Buddy generates the Makefile with per-test targets, regression groups, live progress reporting, and optional result push to the RMS dashboard.
