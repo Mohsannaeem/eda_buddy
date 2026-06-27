@@ -1,0 +1,7 @@
+# Machine-specific working config — each user has their own
+project_structure.yaml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
