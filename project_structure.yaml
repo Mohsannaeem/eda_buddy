@@ -1,26 +1,18 @@
-# EDA Buddy Project Structure — template
-# Copy this file to eda_buddy/project_structure.yaml and fill in your paths.
-# Then run: python eda_buddy.py --gen-makefile
-
-project_name: MY_PROJECT
-
+project_name: SMART_SOC_PROJECT
 paths:
-  root:      /path/to/your/run         # ALL generated artifacts go here
-  filelists: filelists                  # relative to root
-  makefile:  .                          # relative to root (. = root itself)
-
-# Global hooks — run before/after EVERY build and simulation across all components.
-# Leave blank ("") to skip.
+  root: D:/Verification/VERIFICATION_PLANNER/run
+  filelists: filelists
+  makefile: .
 hooks:
-  pre:  ""                              # e.g. "source /tools/questa_2023/setup.sh"
-  post: ""
-
+  pre: ''
+  post: ''
 components:
-- name: my_vip
-  build_cfg:   /path/to/tb/yamls/build.yaml
-  runtime_cfg: /path/to/tb/yamls/run.yaml
-
-# Add more components:
-# - name: my_second_vip
-#   build_cfg:   /path/to/second/yamls/build.yaml
-#   runtime_cfg: /path/to/second/yamls/run.yaml
+- name: axi_stream_master_vip
+  build_cfg: D:/Verification/VERIFICATION_PLANNER/Output/axi_stream_master_vip_tb/yamls/axi_stream_master_vip_build.yaml
+  runtime_cfg: D:/Verification/VERIFICATION_PLANNER/Output/axi_stream_master_vip_tb/yamls/axi_stream_master_vip_run.yaml
+- name: axi_stream_slave_vip
+  build_cfg: D:/Verification/VERIFICATION_PLANNER/Output/axi_stream_slave_vip_tb/yamls/axi_stream_slave_vip_build.yaml
+  runtime_cfg: D:/Verification/VERIFICATION_PLANNER/Output/axi_stream_slave_vip_tb/yamls/axi_stream_slave_vip_run.yaml
+- name: axi_stream_fifo
+  build_cfg: D:/Verification/VERIFICATION_PLANNER/Output/axi_stream_fifo/yamls/axi_stream_fifo_build.yaml
+  runtime_cfg: D:/Verification/VERIFICATION_PLANNER/Output/axi_stream_fifo/yamls/axi_stream_fifo_run.yaml
