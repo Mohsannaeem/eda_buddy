@@ -68,9 +68,41 @@ class MakefileGenerator:
         """Make variable name for a component's TB source root."""
         return f"{self._make_var(name)}_SRC_DIR"
 
+    def _is_abs(self, path):
+        return path.startswith('/') or (len(path) > 1 and path[1] == ':')
+
+    def _dep_lines(self, dep_yaml_path):
+        """Return filelist lines (incdir + sources) for one dependency build.yaml.
+        Only interfaces and packages are pulled in — modules/dut of the dep are skipped.
+        Relative paths are resolved against the dep's own root_dir."""
+        import yaml as _yaml
+        try:
+            with open(dep_yaml_path) as f:
+                dep = _yaml.safe_load(f)
+        except Exception as e:
+            self.log.warning(f"Could not load dep build.yaml '{dep_yaml_path}': {e}")
+            return []
+
+        dep_root = self._posix(dep.get('paths', {}).get('root_dir', ''))
+        lines = [f"## -- dep: {os.path.basename(dep_yaml_path)} ({dep_root}) --"]
+
+        for d in dep.get('compilation', {}).get('include_dirs', []):
+            d = str(d)
+            lines.append(f"+incdir+{d}" if self._is_abs(d) else f"+incdir+{dep_root}/{d}")
+
+        dep_src = dep.get('compilation', {}).get('sources', {})
+        for cat in ('interfaces', 'packages'):
+            for src in dep_src.get(cat, []):
+                src = str(src)
+                lines.append(src if self._is_abs(src) else f"{dep_root}/{src}")
+
+        return lines
+
     def _generate_filelist(self, name, build_cfg):
         """Generates <root>/filelists/<name>.f using ${<COMP>_SRC_DIR} so the
-        filelist is portable — only the Make variable needs updating on a new machine."""
+        filelist is portable — only the Make variable needs updating on a new machine.
+        If build_cfg has dependencies.build entries, their interfaces+packages are
+        prepended to the filelist (with absolute paths from the dep's root_dir)."""
         flist_path = self._posix(os.path.abspath(os.path.join(self.flist_dir, f"{name}.f")))
         self.log.info(f"Generating filelist: {flist_path}")
 
@@ -78,18 +110,26 @@ class MakefileGenerator:
         src_ref = f"${{{self._src_var(name)}}}"
 
         lines = [f"## Filelist for {name} — source root resolved from ${self._src_var(name)}"]
+
+        # 1. Dependency build YAMLs — interfaces + packages compiled first
+        dep_yamls = build_cfg.get('dependencies', {}).get('build', []) or []
+        for dep_path in dep_yamls:
+            lines += self._dep_lines(str(dep_path))
+
+        # 2. This component's own include dirs and defines
         for d in build_cfg['compilation'].get('include_dirs', []):
-            lines.append(f"+incdir+{src_ref}/{d}")
+            d = str(d)
+            lines.append(f"+incdir+{d}" if self._is_abs(d) else f"+incdir+{src_ref}/{d}")
         for d in build_cfg['compilation'].get('defines', []):
             lines.append(f"+define+{d}")
 
+        # 3. This component's own sources — dut before modules so the stub is
+        #    compiled before the tb_top that instantiates it.
         sources = build_cfg['compilation']['sources']
-        for category in ['interfaces', 'packages', 'modules', 'dut']:
+        for category in ['interfaces', 'packages', 'dut', 'modules']:
             for src in sources.get(category, []):
-                if src.startswith('/') or (len(src) > 1 and src[1] == ':'):
-                    lines.append(src)   # already absolute — keep as-is
-                else:
-                    lines.append(f"{src_ref}/{src}")
+                src = str(src)
+                lines.append(src if self._is_abs(src) else f"{src_ref}/{src}")
 
         with open(flist_path, "w") as f:
             f.write("\n".join(lines))
@@ -203,8 +243,25 @@ class MakefileGenerator:
 
         tool_args   = run_cfg['runtime'].get('tool_args', {})
         vcs_args    = " ".join(tool_args.get('vcs', []))
-        questa_args = " ".join(tool_args.get('questa', []))
         xcel_args   = " ".join(tool_args.get('xcelium', []))
+        # Strip mode/do flags from questa tool_args — the Makefile template manages
+        # -batch/-gui via $MODE and -do via $DO_CMD; duplicates cause vsim-3905.
+        _questa_raw = tool_args.get('questa', [])
+        _questa_filtered = []
+        _skip_next = False
+        for _a in _questa_raw:
+            if _skip_next:
+                _skip_next = False
+                continue
+            if _a in ('-batch', '-c', '-gui', '-i'):
+                continue
+            if _a == '-do':
+                _skip_next = True   # skip the next token (the do-command string)
+                continue
+            if str(_a).startswith("-do "):
+                continue
+            _questa_filtered.append(str(_a))
+        questa_args = " ".join(_questa_filtered)
 
         quiet_sim = run_cfg['runtime'].get('debug', {}).get('quiet_sim', False)
         # quiet_sim=true  → redirect only to log, no terminal noise
@@ -247,7 +304,7 @@ class MakefileGenerator:
                 f"\t DO_CMD=\"run -all; quit\"; \\",
                 f"\t if [ \"$(WAVES)\" = \"1\" ]; then DO_CMD=\"vcd file $$RUN_DIR/waves.vcd; vcd add -r /*; run -all; quit\"; fi; \\",
                 f"\t if [ \"$(GUI)\" = \"1\" ]; then DO_CMD=\"add wave -r /*; run -all\"; fi; \\",
-                f"\t MODE=\"-c -batch\"; if [ \"$(GUI)\" = \"1\" ]; then MODE=\"-gui\"; fi; \\",
+                f"\t MODE=\"-batch\"; if [ \"$(GUI)\" = \"1\" ]; then MODE=\"-gui\"; fi; \\",
                 f"\t vsim $$MODE -do \"$$DO_CMD\" {questa_args} -lib {work_lib} db_opt +UVM_TESTNAME={t_name} -sv_seed {t_seed} {common_run_args} {t_args} {_redirect}; {_sl}",
             ] + run_post_lines + [""]
 
