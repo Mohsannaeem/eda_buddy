@@ -321,19 +321,25 @@ class MakefileGenerator:
 
         for g_name, g_val in groups.items():
             # Support two group formats:
-            #   list (old): groups: { smoke_test: [tc_001, tc_002] }
-            #   dict (new): groups: { smoke_test: { tests: [...], regression_post_hook: "..." } }
+            #   list (old):  groups: { smoke_test: [tc_001, tc_002] }
+            #   dict (new):  groups: { smoke_test: { tests: [...], hooks: {pre: '', post: ''} } }
+            #   legacy dict: groups: { smoke_test: { tests: [...], regression_post_hook: "..." } }
             if isinstance(g_val, list):
                 tests      = g_val
-                group_hook = ''
+                pre_hook   = ''
+                post_hook  = ''
             else:
-                tests      = g_val.get('tests', [])
-                group_hook = (g_val.get('regression_post_hook') or '').strip()
+                tests     = g_val.get('tests', [])
+                grp_hooks = g_val.get('hooks', {}) or {}
+                pre_hook  = (grp_hooks.get('pre') or '').strip()
+                # hooks.post takes precedence; fall back to legacy regression_post_hook key
+                post_hook = (grp_hooks.get('post') or g_val.get('regression_post_hook') or '').strip()
 
             if not tests:
                 continue
 
-            post_cmd_arg = f'--post-cmd "{group_hook}"' if group_hook else ''
+            post_cmd_arg  = f'--post-cmd "{post_hook}"' if post_hook else ''
+            pre_hook_lines = self._hook_lines(f"PRE-{g_name.upper()}", pre_hook)
 
             for tool in ('vcs', 'questa', 'xcelium'):
                 test_targets = ' '.join(f'{tool}_run_{name}_{t}' for t in tests)
@@ -346,6 +352,7 @@ class MakefileGenerator:
                 content += [
                     f".PHONY: {tool}_run_{name}_{g_name}",
                     f"{tool}_run_{name}_{g_name}:",
+                ] + pre_hook_lines + [
                     f"\t@REGDIR=\"{self._comp_run(name)}/{g_name}_$$(date +%Y%m%d_%H%M%S)\"; \\",
                     f"\tmkdir -p \"$$REGDIR\"; \\",
                     f"\techo \"[{g_name.upper()}] Session dir: $$REGDIR  Total={len(tests)} tests\"; \\",
