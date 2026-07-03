@@ -455,6 +455,15 @@ def run_report(root, project_name='', component=None, save_to=None,
         passed, failed, timeout = _scan_run_dir(reg_dir or os.path.join(root, component or '', 'run'))
         total  = passed + failed + timeout
         cmd    = post_cmd.format(total=total, passed=passed, failed=failed + timeout)
+        # Convert Windows absolute paths (D:\foo\bar) to Cygwin (/cygdrive/d/foo/bar)
+        # so the command works when shell=True invokes /bin/bash in a Cygwin environment.
+        import shutil
+        if shutil.which('cygpath'):
+            cmd = re.sub(
+                r'([A-Za-z]):\\([^\s"\']+)',
+                lambda m: f'/cygdrive/{m.group(1).lower()}/{m.group(2).replace(chr(92), "/")}',
+                cmd
+            )
         print(f"[POST-CMD] {cmd}")
         subprocess.run(cmd, shell=True, check=False)
 
