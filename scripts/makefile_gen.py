@@ -232,7 +232,9 @@ class MakefileGenerator:
                         + self._hook_lines("POST-SIM-GLOBAL",  self.global_hooks.get('post')))
 
         common_args = run_cfg['runtime'].get('common_args', [])
-        verbosity_default = "UVM_LOW"
+        # Fallback matches UVM's own built-in default: a run.yaml that omits the key
+        # must not go quieter than an unconfigured simulation.
+        verbosity_default = "UVM_MEDIUM"
         filtered_common = []
         for arg in common_args:
             if arg.startswith("+UVM_VERBOSITY="):
@@ -240,6 +242,23 @@ class MakefileGenerator:
             else:
                 filtered_common.append(arg)
         common_run_args = " ".join(filtered_common)
+
+        # +UVM_VERBOSITY is lifted out of common_args into a Make variable so a single
+        # run can be re-run louder without editing the yaml:
+        #   make questa_run_<comp>_<test> VERBOSITY=UVM_FULL
+        # A bare VERBOSITY= on the command line wins over the per-component default.
+        MV = self._make_var(name)
+        content += [
+            "## -- Runtime verbosity (default from run.yaml; override: make ... VERBOSITY=UVM_HIGH) --",
+            f"{MV}_VERBOSITY ?= {verbosity_default}",
+            "",
+        ]
+        verbosity_arg = f"+UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$({MV}_VERBOSITY))"
+
+        # The per-run output dir is handed to the simulation so testbench code can write
+        # its own artifacts (trackers, custom dumps) alongside sim.log and waves.vcd
+        # instead of into the cwd, where every test would overwrite the previous one.
+        run_dir_arg = "+RUN_DIR=$$RUN_DIR"
 
         tool_args   = run_cfg['runtime'].get('tool_args', {})
         vcs_args    = " ".join(tool_args.get('vcs', []))
@@ -294,7 +313,7 @@ class MakefileGenerator:
                 f"\t echo \"[VCS] Running {t_name}\"; \\",
                 f"\t VCD_ARGS=\"\"; if [ \"$(WAVES)\" = \"1\" ]; then VCD_ARGS=\"+vcs+dumpvars+$$RUN_DIR/waves.vcd\"; fi; \\",
                 f"\t GUI_FLAG=\"\"; if [ \"$(GUI)\" = \"1\" ]; then GUI_FLAG=\"-gui\"; fi; \\",
-                f"\t {build_dir}/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME={t_name} +ntb_random_seed={t_seed} {common_run_args} {vcs_args} {t_args} {_redirect}; {_sl}",
+                f"\t {build_dir}/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME={t_name} +ntb_random_seed={t_seed} {verbosity_arg} {run_dir_arg} {common_run_args} {vcs_args} {t_args} {_redirect}; {_sl}",
             ] + run_post_lines + [""]
 
             # Questa
@@ -305,14 +324,14 @@ class MakefileGenerator:
                 f"\t if [ \"$(WAVES)\" = \"1\" ]; then DO_CMD=\"vcd file $$RUN_DIR/waves.vcd; vcd add -r /*; run -all; quit\"; fi; \\",
                 f"\t if [ \"$(GUI)\" = \"1\" ]; then DO_CMD=\"add wave -r /*; run -all\"; fi; \\",
                 f"\t MODE=\"-batch\"; if [ \"$(GUI)\" = \"1\" ]; then MODE=\"-gui\"; fi; \\",
-                f"\t vsim $$MODE -do \"$$DO_CMD\" {questa_args} -lib {work_lib} db_opt +UVM_TESTNAME={t_name} -sv_seed {t_seed} {common_run_args} {t_args} {_redirect}; {_sl}",
+                f"\t vsim $$MODE -do \"$$DO_CMD\" {questa_args} -lib {work_lib} db_opt +UVM_TESTNAME={t_name} -sv_seed {t_seed} {verbosity_arg} {run_dir_arg} {common_run_args} {t_args} {_redirect}; {_sl}",
             ] + run_post_lines + [""]
 
             # Xcelium
             content += [f"xcelium_run_{name}_{t_name}:"] + run_pre_lines + [
                 f"\t@{snippet}; \\",
                 f"\t echo \"[XCELIUM] Running {t_name}\"; \\",
-                f"\t {build_dir}/simv +UVM_TESTNAME={t_name} -svseed {t_seed} {common_run_args} {xcel_args} {t_args} {_redirect}; {_sl}",
+                f"\t {build_dir}/simv +UVM_TESTNAME={t_name} -svseed {t_seed} {verbosity_arg} {run_dir_arg} {common_run_args} {xcel_args} {t_args} {_redirect}; {_sl}",
             ] + run_post_lines + [""]
 
         # Group targets — create a timestamped session dir, run all tests, then report
