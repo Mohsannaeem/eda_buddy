@@ -72,7 +72,9 @@ def main():
     if args.end:   payload["end_time"]   = args.end
     if args.log:   payload["log_path"]   = args.log
 
-    print(f"[RMS] Pushing result for '{args.id}' → {args.url} ...")
+    # ASCII only: this runs on a Windows cp1252 console where a Unicode arrow
+    # raises UnicodeEncodeError and would abort the regression flow.
+    print(f"[RMS] Pushing result for '{args.id}' -> {args.url} ...")
 
     try:
         r = requests.post(f"{args.url}/api/runs/result", json=payload, timeout=10)
