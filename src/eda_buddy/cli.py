@@ -1,84 +1,158 @@
-import os
-import sys
-import yaml
+"""EDA Buddy command-line interface.
+
+    eda-buddy gen                          generate Makefile + filelists
+    eda-buddy build  --comp X              compile + elaborate
+    eda-buddy run    <test|group> --comp X simulate
+    eda-buddy all    [target]    --comp X  gen -> build -> run, serial
+    eda-buddy report | clean
+
+Every command resolves a target in the generated Makefile and hands it to make.
+Nothing here re-implements how a simulation is launched.
+"""
+
 import argparse
+import sys
 
-# Modular Imports
-from .logger import EDABuddyLogger
-from .makefile_gen import MakefileGenerator
+from . import __version__
+from .config import ProjectError, load_project
+from .runner import Runner
+from .toolchain import SUPPORTED_TOOLS, resolve_make, resolve_tool
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="EDA Buddy - Centralized Project Manager",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+_LEGACY_FLAG = "--gen-makefile"
+
+
+def _add_common(p):
+    p.add_argument("--project-cfg", default="project_structure.yaml",
+                   help="Path to project structure YAML (default: %(default)s)")
+    p.add_argument("--make", default=None,
+                   help="make executable. Overrides tools.make and $EDA_BUDDY_MAKE")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Print the make command instead of running it")
+
+
+def _add_target_opts(p):
+    p.add_argument("--comp", default=None,
+                   help="Component name. Required when the project declares more than one")
+    p.add_argument("--tool", default=None, choices=SUPPORTED_TOOLS,
+                   help="Simulator. Overrides tools.simulator and inference from tool_settings")
+
+
+def _add_run_opts(p):
+    p.add_argument("--waves", action="store_true", help="Dump waves (WAVES=1)")
+    p.add_argument("--gui", action="store_true", help="Run in GUI mode (GUI=1)")
+    p.add_argument("--verbosity", default=None,
+                   help="Override UVM verbosity for this run, e.g. UVM_HIGH (VERBOSITY=)")
+    p.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
+                   help="Run a group's tests N-way parallel. Generation and build stay serial")
+
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="eda-buddy",
+        description="EDA Buddy - UVM simulation manager",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    p.add_argument("--version", action="version", version=f"eda-buddy {__version__}")
+    sub = p.add_subparsers(dest="command")
 
-    parser.add_argument("--gen-makefile", action="store_true", help="Generate Hierarchical Makefile under paths.root")
-    parser.add_argument("--project-cfg", default="project_structure.yaml", help="Path to project structure YAML")
+    g = sub.add_parser("gen", help="Generate the Makefile and filelists")
+    _add_common(g)
 
-    args = parser.parse_args()
+    b = sub.add_parser("build", help="Compile and elaborate a component")
+    _add_common(b)
+    _add_target_opts(b)
+
+    r = sub.add_parser("run", help="Run a test or a regression group")
+    _add_common(r)
+    _add_target_opts(r)
+    _add_run_opts(r)
+    r.add_argument("target", help="Test name or group name")
+
+    a = sub.add_parser("all", help="Generate, build, then run - in that order")
+    _add_common(a)
+    _add_target_opts(a)
+    _add_run_opts(a)
+    a.add_argument("target", nargs="?", default=None,
+                   help="Test or group to run (default: the 'regression' group)")
+
+    rep = sub.add_parser("report", help="Print the pass/fail summary")
+    _add_common(rep)
+
+    cl = sub.add_parser("clean", help="Remove build/work/run directories")
+    _add_common(cl)
+
+    return p
+
+
+def _run_vars(args):
+    """Map CLI flags onto the Makefile variables that already exist."""
+    return {
+        "WAVES":     "1" if getattr(args, "waves", False) else None,
+        "GUI":       "1" if getattr(args, "gui", False) else None,
+        "VERBOSITY": getattr(args, "verbosity", None),
+        "JOBS":      getattr(args, "jobs", None),
+    }
+
+
+def _normalize_argv(argv):
+    """Accept the pre-subcommand invocation documented in README section 2.
+
+    `eda_buddy.py --gen-makefile [--project-cfg X]` predates subcommands and is
+    baked into user scripts, so it is rewritten to `gen` rather than rejected.
+    """
+    if _LEGACY_FLAG in argv:
+        rest = [a for a in argv if a != _LEGACY_FLAG]
+        print("[EDA Buddy] note: --gen-makefile is deprecated; use 'eda-buddy gen'.",
+              file=sys.stderr)
+        return ["gen"] + rest
+    return argv
+
+
+def main(argv=None):
+    argv = _normalize_argv(list(sys.argv[1:] if argv is None else argv))
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if not args.command:
+        parser.print_help()
+        return 1
 
     try:
-        # 1. Load Project Structure (paths.root drives everything)
-        if not os.path.exists(args.project_cfg):
-            print(f"[ERROR] Project structure file '{args.project_cfg}' not found.")
-            sys.exit(1)
+        project = load_project(args.project_cfg)
 
-        with open(args.project_cfg, 'r') as f:
-            project_data = yaml.safe_load(f)
+        # `gen` touches no external tool, so it must not require make to exist.
+        make_exe = None if args.command == "gen" else resolve_make(project, args.make)
+        runner = Runner(project, make_exe=make_exe, dry_run=args.dry_run)
 
-        # 2. Resolve root, sub-paths, and global hooks from YAML
-        proj_paths   = project_data.get('paths', {})
-        root         = os.path.abspath(proj_paths.get('root', 'run'))
-        flist_sub    = proj_paths.get('filelists', 'filelists')
-        makefile_sub = proj_paths.get('makefile', '.')
-        global_hooks = project_data.get('hooks', {})
-        os.makedirs(root, exist_ok=True)
+        if args.command == "gen":
+            return runner.generate()
+        if args.command == "report":
+            return runner.cmd_report()
+        if args.command == "clean":
+            return runner.cmd_clean()
 
-        log = EDABuddyLogger(log_dir=os.path.join(root, "logs", "eda_buddy"))
-        log.header("EDA Buddy Project Loading")
-        log.info(f"Project : {project_data.get('project_name', 'Unknown')}")
-        log.info(f"Root    : {root}")
-        log.info(f"Filelist: {os.path.join(root, flist_sub)}")
+        comp = project.resolve_component(args.comp)
+        tool = resolve_tool(project, comp, args.tool)
 
-        # 3. Load Component Configs
-        component_configs = {}
-        for comp in project_data.get('components', []):
-            name   = comp['name']
-            b_path = comp['build_cfg']
-            r_path = comp['runtime_cfg']
+        if args.command == "build":
+            return runner.cmd_build(comp, tool)
+        if args.command == "run":
+            return runner.cmd_run(comp, tool, args.target, _run_vars(args))
+        if args.command == "all":
+            return runner.cmd_all(comp, tool, args.target, _run_vars(args))
 
-            if os.path.exists(b_path) and os.path.exists(r_path):
-                log.info(f"Loading Component: {name}")
-                with open(b_path, 'r') as bf, open(r_path, 'r') as rf:
-                    component_configs[name] = (yaml.safe_load(bf), yaml.safe_load(rf))
-            else:
-                log.warning(f"Config files for '{name}' not found:")
-                if not os.path.exists(b_path):
-                    log.warning(f"  build_cfg missing   : {b_path}")
-                if not os.path.exists(r_path):
-                    log.warning(f"  runtime_cfg missing : {r_path}")
+        parser.error(f"unhandled command '{args.command}'")
 
-        if not component_configs:
-            log.error("No valid component configurations were loaded.")
-            sys.exit(1)
-
-        # 4. Action Dispatching
-        if args.gen_makefile:
-            gen = MakefileGenerator(
-                component_configs,
-                log,
-                root=root,
-                flist_subdir=flist_sub,
-                makefile_subdir=makefile_sub,
-                global_hooks=global_hooks,
-                project_name=project_data.get('project_name', ''),
-            )
-            gen.generate()
-
+    except ProjectError as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[EDA Buddy] interrupted.", file=sys.stderr)
+        return 130
     except Exception as e:
-        print(f"[ERROR] Critical tool failure: {e}")
-        sys.exit(1)
+        print(f"[ERROR] Critical tool failure: {e}", file=sys.stderr)
+        return 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

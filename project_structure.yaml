@@ -3,6 +3,11 @@ paths:
   root: D:/Verification/VERIFICATION_PLANNER/run
   filelists: filelists
   makefile: .
+# Optional. make is not on the default PATH here, and every component declares
+# both vcs and questa, so without these each command would need --make/--tool.
+tools:
+  make: C:/cygwin64/bin/make.exe
+  simulator: questa
 hooks:
   pre: ''
   post: ''

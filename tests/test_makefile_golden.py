@@ -41,6 +41,11 @@ _VOLATILE_LINE = re.compile(
     re.MULTILINE,
 )
 
+# The integrity stamp is a hash of the real, un-normalized content, so it changes
+# with the temp directory the fixture was generated in. Its correctness is covered
+# by test_checksum.py; here it is only noise.
+_CHECKSUM_LINE = re.compile(r"^## eda-buddy-checksum: sha256:[0-9a-f]+$", re.MULTILINE)
+
 
 def _materialize(tmp):
     """Copy fixtures into tmp, resolving __FIXDIR__ to the temp fixture dir.
@@ -92,6 +97,7 @@ def _normalize(text, fixdir, root, tmp):
     for needle, token in ((root, "__ROOT__"), (fixdir, "__FIXDIR__"), (tmp, "__TMP__")):
         for variant in (needle, needle.replace("/", "\\")):
             text = text.replace(variant, token)
+    text = _CHECKSUM_LINE.sub("## eda-buddy-checksum: __CHECKSUM__", text)
     return _VOLATILE_LINE.sub(r"\1\2:= __EDA_BUDDY_SCRIPT__", text)
 
 

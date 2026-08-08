@@ -1,4 +1,41 @@
+import hashlib
 import os
+
+_CHECKSUM_PREFIX = "## eda-buddy-checksum: sha256:"
+
+
+def strip_checksum(text):
+    """Return `text` without its checksum line."""
+    return "\n".join(l for l in text.split("\n") if not l.startswith(_CHECKSUM_PREFIX))
+
+
+def compute_checksum(text):
+    """Checksum of a Makefile's content, ignoring the checksum line itself."""
+    return hashlib.sha256(strip_checksum(text).encode("utf-8")).hexdigest()
+
+
+def read_checksum(text):
+    """The checksum a Makefile claims, or None if it carries no stamp."""
+    for line in text.split("\n"):
+        if line.startswith(_CHECKSUM_PREFIX):
+            return line[len(_CHECKSUM_PREFIX):].strip()
+    return None
+
+
+def is_pristine(path):
+    """True when `path` is exactly as EDA Buddy generated it.
+
+    False for a hand-edited file *and* for one generated before checksums
+    existed — in both cases the content's provenance is unknown, so a caller
+    about to overwrite it should preserve a copy first.
+    """
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return False
+    claimed = read_checksum(text)
+    return claimed is not None and claimed == compute_checksum(text)
 
 
 class MakefileGenerator:
@@ -476,7 +513,12 @@ class MakefileGenerator:
             "",
         ]
 
+        # Stamped so `eda-buddy build/run` can tell a pristine Makefile from a
+        # hand-edited one and back the latter up before regenerating it.
+        body = "\n".join(content)
+        body = body.replace("\n", "\n{}{}\n".format(_CHECKSUM_PREFIX, compute_checksum(body)), 1)
+
         with open(output_path, "w") as f:
-            f.write("\n".join(content))
+            f.write(body)
 
         self.log.success(f"Makefile ready at {output_path}")

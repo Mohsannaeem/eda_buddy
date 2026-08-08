@@ -27,4 +27,4 @@ if __name__ == "__main__":
     print("[EDA Buddy] note: 'python eda_buddy.py' is deprecated; "
           "install the package and use the 'eda-buddy' command instead.",
           file=sys.stderr)
-    main()
+    sys.exit(main())
