@@ -419,6 +419,7 @@ ones from its flags.
 | `QUIET=0\|1` | Log only, no terminal output | `debug.quiet_sim` | `--quiet` / `--no-quiet` |
 | `WAVE_FORMAT=vcd\|wlf` | Waveform format | `debug.wave_format` | `--wave-format` |
 | `VERBOSITY=UVM_HIGH` | UVM verbosity | `runtime.common_args` | `--verbosity` |
+| `RMS_ID=MY_REG` | Push results to this RMS regression | `groups.<name>.rms_id` | `--rms-id` |
 | `JOBS=N` | Run a group's tests N-way parallel | — | `-j N` |
 | `PYTHON=python3` | Interpreter used for reporting and RMS push | — | — |
 
@@ -613,6 +614,17 @@ returns 404.
 
 Set `RMS_URL` (or pass `--rms-url` to `run_report`) if the backend is not on
 `http://localhost:8000`.
+
+**Overriding per run.** `rms_id` is only the default. `--rms-id` (or `RMS_ID=` on
+the make line) wins for that run, so a session can be pushed to a different
+regression — or to one at all, when the YAML names none — without editing YAML:
+
+```bash
+eda-buddy run smoke_test --comp my_vip --rms-id MY_VIP_EXPERIMENT
+make questa_run_my_vip_smoke_test RMS_ID=MY_VIP_EXPERIMENT
+```
+
+With no `rms_id` in the YAML and no `--rms-id`, nothing is pushed.
 
 **Custom post-run commands** still use `hooks.post`, which is unchanged and runs
 alongside `rms_id`:

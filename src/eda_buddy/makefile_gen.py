@@ -460,7 +460,11 @@ class MakefileGenerator:
                 continue
 
             post_cmd_arg  = f'--post-cmd "{post_hook}"' if post_hook else ''
-            rms_id_arg    = f'--rms-id {rms_id}' if rms_id else ''
+            # RMS_ID on the make line wins over the group's rms_id, so a session
+            # can be pushed to a different regression — or to one at all, when the
+            # YAML names none — without editing the YAML.
+            _static_rms   = f'--rms-id {rms_id}' if rms_id else ''
+            rms_id_arg    = f'$(if $(RMS_ID),--rms-id $(RMS_ID),{_static_rms})'
             pre_hook_lines = self._hook_lines(f"PRE-{g_name.upper()}", pre_hook)
 
             for tool in ('vcs', 'questa', 'xcelium'):

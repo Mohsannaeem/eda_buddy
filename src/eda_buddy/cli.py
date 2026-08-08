@@ -58,6 +58,9 @@ def _add_run_opts(p):
 
     p.add_argument("--wave-format", default=None, choices=("vcd", "wlf"),
                    help="Waveform format, overriding runtime.debug.wave_format")
+    p.add_argument("--rms-id", default=None, metavar="ID",
+                   help="Push this session's results to RMS regression ID, "
+                        "overriding the group's rms_id")
     p.add_argument("--verbosity", default=None,
                    help="Override UVM verbosity for this run, e.g. UVM_HIGH (VERBOSITY=)")
     p.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
@@ -114,6 +117,7 @@ def _run_vars(args):
         "QUIET":       getattr(args, "quiet", None),
         "WAVE_FORMAT": getattr(args, "wave_format", None),
         "VERBOSITY":   getattr(args, "verbosity", None),
+        "RMS_ID":      getattr(args, "rms_id", None),
         "JOBS":        getattr(args, "jobs", None),
     }
 
