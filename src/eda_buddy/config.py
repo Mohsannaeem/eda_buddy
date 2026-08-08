@@ -22,11 +22,12 @@ class Project:
 
     def __init__(self, cfg_path, data, log):
         self.cfg_path = os.path.abspath(cfg_path)
+        self.cfg_dir  = os.path.dirname(self.cfg_path)
         self.data     = data
         self.log      = log
 
         paths              = data.get('paths', {})
-        self.root          = os.path.abspath(paths.get('root', 'run'))
+        self.root          = self.resolve(paths.get('root', 'run'))
         self.flist_subdir  = paths.get('filelists', 'filelists')
         self.makefile_sub  = paths.get('makefile', '.')
         self.global_hooks  = data.get('hooks', {})
@@ -39,6 +40,16 @@ class Project:
 
         self.components    = {}   # name -> (build_cfg, run_cfg)
         self._cfg_files    = [self.cfg_path]   # every YAML that feeds generation
+
+    def resolve(self, path):
+        """Resolve a path from the project file against that file's directory.
+
+        Relative paths are what make a project file portable, and resolving them
+        against the current working directory instead would mean the same file
+        worked or failed depending on where the command was typed. Absolute
+        paths are returned unchanged, so existing project files are unaffected.
+        """
+        return os.path.abspath(os.path.join(self.cfg_dir, str(path)))
 
     @property
     def makefile_dir(self):
@@ -88,12 +99,13 @@ def load_project(cfg_path):
     with open(cfg_path, 'r') as f:
         data = yaml.safe_load(f)
 
-    paths = (data or {}).get('paths', {})
-    root  = os.path.abspath(paths.get('root', 'run'))
-    os.makedirs(root, exist_ok=True)
+    # Built before the logger so that paths.root is resolved by Project.resolve()
+    # rather than duplicating the rule here.
+    project = Project(cfg_path, data or {}, None)
+    os.makedirs(project.root, exist_ok=True)
 
-    log = EDABuddyLogger(log_dir=os.path.join(root, "logs", "eda_buddy"))
-    project = Project(cfg_path, data, log)
+    log = EDABuddyLogger(log_dir=os.path.join(project.root, "logs", "eda_buddy"))
+    project.log = log
 
     log.header("EDA Buddy Project Loading")
     log.info(f"Project : {project.name or 'Unknown'}")
@@ -102,8 +114,8 @@ def load_project(cfg_path):
 
     for comp in (data.get('components', []) or []):
         name   = comp['name']
-        b_path = comp['build_cfg']
-        r_path = comp['runtime_cfg']
+        b_path = project.resolve(comp['build_cfg'])
+        r_path = project.resolve(comp['runtime_cfg'])
 
         if os.path.exists(b_path) and os.path.exists(r_path):
             log.info(f"Loading Component: {name}")

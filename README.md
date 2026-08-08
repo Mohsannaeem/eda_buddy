@@ -99,7 +99,12 @@ you expect to pull updates — a plain `pip install .` works too.
 
 ### Step 2 — Create `project_structure.yaml`
 
-Copy the template below into `eda_buddy/project_structure.yaml` and fill in your paths:
+Put this file wherever your project lives — it does not belong inside the
+EDA Buddy checkout. Point at it with `--project-cfg` or `$EDA_BUDDY_PROJECT_CFG`.
+
+**Paths in it are resolved relative to the file itself**, not to your current
+directory, so a project file using relative paths works from anywhere and
+survives being cloned to another machine. Absolute paths still work unchanged.
 
 ```yaml
 project_name: MY_PROJECT
@@ -692,7 +697,7 @@ groups:
 
 ## Complete Minimal Example
 
-**File: `eda_buddy/project_structure.yaml`**
+**File: `my_project/project_structure.yaml`**
 ```yaml
 project_name: MY_PROJECT
 paths:

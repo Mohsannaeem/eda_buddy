@@ -9,6 +9,7 @@ group over a same-named test — so they are worth pinning. Run standalone:
 
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
@@ -156,6 +157,42 @@ def test_sole_group_is_the_default():
 def test_ambiguous_default_group_is_an_error():
     r, _ = _runner({"c": _comp(["questa"], groups={"a": [], "b": []})})
     _expect_error(lambda: r.default_group("c"), "name the target")
+
+
+# ── path resolution ───────────────────────────────────────────────────────────
+# A project file is portable only if its relative paths resolve against itself.
+# Resolving against the working directory would make the same file work or fail
+# depending on where the command was typed.
+
+def _project_at(cfg_path, root):
+    return Project(cfg_path, {"paths": {"root": root}}, _Log())
+
+
+def test_relative_root_resolves_against_the_config_file():
+    tmp = os.path.realpath(tempfile.mkdtemp())
+    cfg = os.path.join(tmp, "cfg", "project_structure.yaml")
+    os.makedirs(os.path.dirname(cfg))
+    p = _project_at(cfg, "../run")
+    assert p.root == os.path.join(tmp, "run"), p.root
+
+
+def test_resolution_is_independent_of_cwd():
+    tmp = os.path.realpath(tempfile.mkdtemp())
+    cfg = os.path.join(tmp, "project_structure.yaml")
+    before = os.getcwd()
+    try:
+        os.chdir(tempfile.mkdtemp())      # somewhere else entirely
+        p = _project_at(cfg, "run")
+        assert p.root == os.path.join(tmp, "run"), p.root
+    finally:
+        os.chdir(before)
+
+
+def test_absolute_paths_are_left_alone():
+    tmp = os.path.realpath(tempfile.mkdtemp())
+    abs_root = os.path.realpath(tempfile.mkdtemp())
+    p = _project_at(os.path.join(tmp, "project_structure.yaml"), abs_root)
+    assert p.root == abs_root, p.root
 
 
 if __name__ == "__main__":

@@ -1,13 +1,23 @@
 # EDA Buddy Project Structure — template
-# Copy this file to eda_buddy/project_structure.yaml and fill in your paths.
-# Then run: python eda_buddy.py --gen-makefile
+# Copy this next to your project (NOT into the eda_buddy checkout), then:
+#   eda-buddy gen --project-cfg /path/to/this/project_structure.yaml
+# or export EDA_BUDDY_PROJECT_CFG once and drop the flag.
+#
+# Paths are resolved relative to THIS FILE's directory, not your current
+# directory, so relative paths keep working from anywhere. Absolute paths
+# are used as-is.
 
 project_name: MY_PROJECT
 
 paths:
-  root:      /path/to/your/run         # ALL generated artifacts go here
+  root:      ../run                     # ALL generated artifacts go here
   filelists: filelists                  # relative to root
   makefile:  .                          # relative to root (. = root itself)
+
+# OPTIONAL — saves passing --make / --tool on every command.
+tools:
+  make:      /usr/bin/make              # omit to use $EDA_BUDDY_MAKE or PATH
+  simulator: questa                     # questa | vcs | xcelium
 
 # Global hooks — run before/after EVERY build and simulation across all components.
 # Leave blank ("") to skip.
@@ -17,10 +27,10 @@ hooks:
 
 components:
 - name: my_vip
-  build_cfg:   /path/to/tb/yamls/build.yaml
-  runtime_cfg: /path/to/tb/yamls/run.yaml
+  build_cfg:   my_vip_tb/yamls/build.yaml      # relative to this file
+  runtime_cfg: my_vip_tb/yamls/run.yaml
 
 # Add more components:
 # - name: my_second_vip
-#   build_cfg:   /path/to/second/yamls/build.yaml
-#   runtime_cfg: /path/to/second/yamls/run.yaml
+#   build_cfg:   my_second_vip_tb/yamls/build.yaml
+#   runtime_cfg: my_second_vip_tb/yamls/run.yaml
