@@ -15,7 +15,14 @@ FLIST_DIR := $(ROOT)/filelists
 ## Invoked as modules rather than file paths: an installed package moves
 ## between venvs and site-packages, and a baked-in absolute path goes stale
 ## the first time it does. This form keeps working across reinstalls.
-PYTHON     ?= python
+
+## Pinned to the interpreter that generated this file. A bare `python`
+## resolves to Cygwin's own /usr/bin/python under Cygwin make — a separate
+## installation, without eda_buddy — which silently disables all reporting.
+## Written in mixed form (C:/...): Cygwin executes that directly, whereas a
+## backslash path fails, and cygpath is not usable here because the one
+## first on PATH may be MSYS's, which emits /c/... that Cygwin cannot resolve.
+PYTHON     ?= __PYTHON__
 REPORT_CMD := __EDA_BUDDY_SCRIPT__
 PUSH_CMD   := __EDA_BUDDY_SCRIPT__
 

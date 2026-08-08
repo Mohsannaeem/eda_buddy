@@ -1,7 +1,17 @@
 import hashlib
 import os
+import sys
 
 _CHECKSUM_PREFIX = "## eda-buddy-checksum: sha256:"
+
+
+def _python_exe():
+    """The running interpreter, in a form the Makefile can quote.
+
+    Forward slashes because Cygwin's bash cannot execute a backslash path, and
+    cygpath in the Makefile converts this to /cygdrive/... at parse time.
+    """
+    return (sys.executable or "python").replace("\\", "/")
 
 
 def strip_checksum(text):
@@ -498,7 +508,14 @@ class MakefileGenerator:
             "## Invoked as modules rather than file paths: an installed package moves",
             "## between venvs and site-packages, and a baked-in absolute path goes stale",
             "## the first time it does. This form keeps working across reinstalls.",
-            "PYTHON     ?= python",
+            "",
+            "## Pinned to the interpreter that generated this file. A bare `python`",
+            "## resolves to Cygwin's own /usr/bin/python under Cygwin make — a separate",
+            "## installation, without eda_buddy — which silently disables all reporting.",
+            "## Written in mixed form (C:/...): Cygwin executes that directly, whereas a",
+            "## backslash path fails, and cygpath is not usable here because the one",
+            "## first on PATH may be MSYS's, which emits /c/... that Cygwin cannot resolve.",
+            f"PYTHON     ?= {_python_exe()}",
             "REPORT_CMD := $(PYTHON) -m eda_buddy.run_report",
             "PUSH_CMD   := $(PYTHON) -m eda_buddy.push_result",
             "",

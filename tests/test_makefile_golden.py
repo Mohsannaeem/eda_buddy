@@ -41,6 +41,11 @@ _VOLATILE_LINE = re.compile(
     re.MULTILINE,
 )
 
+# PYTHON is pinned to the interpreter that generated the file, so it differs
+# per machine and per venv. Its correctness is a runtime property, not a
+# text-comparison one.
+_PYTHON_LINE = re.compile(r"^PYTHON(\s*)\?=.*$", re.MULTILINE)
+
 # The integrity stamp is a hash of the real, un-normalized content, so it changes
 # with the temp directory the fixture was generated in. Its correctness is covered
 # by test_checksum.py; here it is only noise.
@@ -98,6 +103,7 @@ def _normalize(text, fixdir, root, tmp):
         for variant in (needle, needle.replace("/", "\\")):
             text = text.replace(variant, token)
     text = _CHECKSUM_LINE.sub("## eda-buddy-checksum: __CHECKSUM__", text)
+    text = _PYTHON_LINE.sub(r"PYTHON\1?= __PYTHON__", text)
     return _VOLATILE_LINE.sub(r"\1\2:= __EDA_BUDDY_SCRIPT__", text)
 
 
