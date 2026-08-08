@@ -43,8 +43,21 @@ def _add_target_opts(p):
 
 
 def _add_run_opts(p):
-    p.add_argument("--waves", action="store_true", help="Dump waves (WAVES=1)")
-    p.add_argument("--gui", action="store_true", help="Run in GUI mode (GUI=1)")
+    # Tri-state: unset leaves the run.yaml default in force, so a flag's absence
+    # is not the same as switching it off.
+    for name, dest, helptext in (
+        ("waves", "waves", "wave dumping (runtime.debug.dump_waves)"),
+        ("gui",   "gui",   "GUI mode (runtime.debug.gui_mode)"),
+        ("quiet", "quiet", "quiet mode: log only, no terminal output (runtime.debug.quiet_sim)"),
+    ):
+        g = p.add_mutually_exclusive_group()
+        g.add_argument(f"--{name}", dest=dest, action="store_const", const="1",
+                       default=None, help=f"Enable {helptext}")
+        g.add_argument(f"--no-{name}", dest=dest, action="store_const", const="0",
+                       help=f"Disable {helptext}")
+
+    p.add_argument("--wave-format", default=None, choices=("vcd", "wlf"),
+                   help="Waveform format, overriding runtime.debug.wave_format")
     p.add_argument("--verbosity", default=None,
                    help="Override UVM verbosity for this run, e.g. UVM_HIGH (VERBOSITY=)")
     p.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
@@ -90,12 +103,18 @@ def build_parser():
 
 
 def _run_vars(args):
-    """Map CLI flags onto the Makefile variables that already exist."""
+    """Map CLI flags onto the Makefile variables.
+
+    A None here means "not specified", and Runner.make drops it, leaving the
+    per-component default from run.yaml in force.
+    """
     return {
-        "WAVES":     "1" if getattr(args, "waves", False) else None,
-        "GUI":       "1" if getattr(args, "gui", False) else None,
-        "VERBOSITY": getattr(args, "verbosity", None),
-        "JOBS":      getattr(args, "jobs", None),
+        "WAVES":       getattr(args, "waves", None),
+        "GUI":         getattr(args, "gui", None),
+        "QUIET":       getattr(args, "quiet", None),
+        "WAVE_FORMAT": getattr(args, "wave_format", None),
+        "VERBOSITY":   getattr(args, "verbosity", None),
+        "JOBS":        getattr(args, "jobs", None),
     }
 
 

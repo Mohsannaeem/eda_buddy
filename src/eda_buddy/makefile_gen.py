@@ -39,6 +39,11 @@ def is_pristine(path):
 
 
 class MakefileGenerator:
+    # Formats EDA Buddy can emit working dump commands for. FSDB is deliberately
+    # absent: it needs the Verdi/Novas PLI, which is not configured here, so
+    # emitting it would produce a command that fails at runtime.
+    WAVE_FORMATS = ("vcd", "wlf")
+
     def __init__(self, component_configs, logger,
                  root="run", flist_subdir="filelists", makefile_subdir=".",
                  global_hooks=None, project_name=''):
@@ -315,10 +320,52 @@ class MakefileGenerator:
             _questa_filtered.append(str(_a))
         questa_args = " ".join(_questa_filtered)
 
-        quiet_sim = run_cfg['runtime'].get('debug', {}).get('quiet_sim', False)
-        # quiet_sim=true  → redirect only to log, no terminal noise
-        # quiet_sim=false → tee to terminal AND log (default)
-        _redirect = "> $$LOGFILE 2>&1" if quiet_sim else "2>&1 | tee $$LOGFILE"
+        # runtime.debug supplies the per-component defaults. Each becomes a Make
+        # variable so a single run can override it without editing the YAML, the
+        # same way VERBOSITY works:
+        #   make questa_run_<comp>_<test> WAVES=1 GUI=1 QUIET=0 WAVE_FORMAT=wlf
+        debug = run_cfg['runtime'].get('debug', {}) or {}
+
+        def _flag(key, default=False):
+            return "1" if debug.get(key, default) else "0"
+
+        wave_format = str(debug.get('wave_format', 'vcd')).lower()
+        if wave_format not in self.WAVE_FORMATS:
+            raise ValueError(
+                "component '{}': wave_format '{}' is not supported. Use one of: {}.\n"
+                "  vcd  — portable, works with Questa and VCS\n"
+                "  wlf  — Questa's native format, no extra libraries\n"
+                "FSDB needs the Verdi/Novas PLI, which EDA Buddy does not configure; "
+                "if you need it, add the -pli flags to runtime.tool_args yourself."
+                .format(name, wave_format, ", ".join(sorted(self.WAVE_FORMATS)))
+            )
+
+        content += [
+            "## -- Runtime debug defaults (from run.yaml; override on the make line) --",
+            f"{MV}_WAVES       ?= {_flag('dump_waves')}",
+            f"{MV}_GUI         ?= {_flag('gui_mode')}",
+            f"{MV}_QUIET       ?= {_flag('quiet_sim')}",
+            f"{MV}_WAVE_FORMAT ?= {wave_format}",
+            "",
+        ]
+
+        # A bare WAVES=/GUI=/QUIET= on the command line wins over the component default.
+        waves_eff  = f"$(if $(WAVES),$(WAVES),$({MV}_WAVES))"
+        gui_eff    = f"$(if $(GUI),$(GUI),$({MV}_GUI))"
+        quiet_eff  = f"$(if $(QUIET),$(QUIET),$({MV}_QUIET))"
+        format_eff = f"$(if $(WAVE_FORMAT),$(WAVE_FORMAT),$({MV}_WAVE_FORMAT))"
+
+        # quiet=1 → redirect only to the log, no terminal noise
+        # quiet=0 → tee to terminal AND log (default)
+        # Resolved by make rather than by the shell, because a pipeline cannot be
+        # applied conditionally inline without repeating the whole command.
+        content += [
+            # $$LOGFILE, not $$$$: a recursive variable's value is expanded once
+            # when used, exactly like inline recipe text, so $$ -> $ for the shell.
+            f"{MV}_REDIRECT = $(if $(filter 1,{quiet_eff}),> $$LOGFILE 2>&1,2>&1 | tee $$LOGFILE)",
+            "",
+        ]
+        _redirect = f"$({MV}_REDIRECT)"
 
         total_tests = len(run_cfg['test_config']['entry_points'])
 
@@ -344,8 +391,8 @@ class MakefileGenerator:
             content += [f"vcs_run_{name}_{t_name}:"] + run_pre_lines + [
                 f"\t@{snippet}; \\",
                 f"\t echo \"[VCS] Running {t_name}\"; \\",
-                f"\t VCD_ARGS=\"\"; if [ \"$(WAVES)\" = \"1\" ]; then VCD_ARGS=\"+vcs+dumpvars+$$RUN_DIR/waves.vcd\"; fi; \\",
-                f"\t GUI_FLAG=\"\"; if [ \"$(GUI)\" = \"1\" ]; then GUI_FLAG=\"-gui\"; fi; \\",
+                f"\t VCD_ARGS=\"\"; if [ \"{waves_eff}\" = \"1\" ]; then VCD_ARGS=\"+vcs+dumpvars+$$RUN_DIR/waves.vcd\"; fi; \\",
+                f"\t GUI_FLAG=\"\"; if [ \"{gui_eff}\" = \"1\" ]; then GUI_FLAG=\"-gui\"; fi; \\",
                 f"\t {build_dir}/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME={t_name} +ntb_random_seed={t_seed} {verbosity_arg} {run_dir_arg} {common_run_args} {vcs_args} {t_args} {_redirect}; {_sl}",
             ] + run_post_lines + [""]
 
@@ -353,11 +400,19 @@ class MakefileGenerator:
             content += [f"questa_run_{name}_{t_name}:"] + run_pre_lines + [
                 f"\t@{snippet}; \\",
                 f"\t echo \"[QUESTA] Running {t_name}\"; \\",
-                f"\t DO_CMD=\"run -all; quit\"; \\",
-                f"\t if [ \"$(WAVES)\" = \"1\" ]; then DO_CMD=\"vcd file $$RUN_DIR/waves.vcd; vcd add -r /*; run -all; quit\"; fi; \\",
-                f"\t if [ \"$(GUI)\" = \"1\" ]; then DO_CMD=\"add wave -r /*; run -all\"; fi; \\",
-                f"\t MODE=\"-batch\"; if [ \"$(GUI)\" = \"1\" ]; then MODE=\"-gui\"; fi; \\",
-                f"\t vsim $$MODE -do \"$$DO_CMD\" {questa_args} -lib {work_lib} db_opt +UVM_TESTNAME={t_name} -sv_seed {t_seed} {verbosity_arg} {run_dir_arg} {common_run_args} {t_args} {_redirect}; {_sl}",
+                f"\t DO_CMD=\"run -all; quit\"; WLF_ARGS=\"\"; \\",
+                # WLF is Questa's native database: it needs -wlf for the destination
+                # and `log -r /*` to actually record signals, not a vcd-style dump.
+                f"\t if [ \"{waves_eff}\" = \"1\" ]; then \\",
+                f"\t   if [ \"{format_eff}\" = \"wlf\" ]; then \\",
+                f"\t     WLF_ARGS=\"-wlf $$RUN_DIR/waves.wlf\"; DO_CMD=\"log -r /*; run -all; quit\"; \\",
+                f"\t   else \\",
+                f"\t     DO_CMD=\"vcd file $$RUN_DIR/waves.vcd; vcd add -r /*; run -all; quit\"; \\",
+                f"\t   fi; \\",
+                f"\t fi; \\",
+                f"\t if [ \"{gui_eff}\" = \"1\" ]; then DO_CMD=\"add wave -r /*; run -all\"; fi; \\",
+                f"\t MODE=\"-batch\"; if [ \"{gui_eff}\" = \"1\" ]; then MODE=\"-gui\"; fi; \\",
+                f"\t vsim $$MODE $$WLF_ARGS -do \"$$DO_CMD\" {questa_args} -lib {work_lib} db_opt +UVM_TESTNAME={t_name} -sv_seed {t_seed} {verbosity_arg} {run_dir_arg} {common_run_args} {t_args} {_redirect}; {_sl}",
             ] + run_post_lines + [""]
 
             # Xcelium

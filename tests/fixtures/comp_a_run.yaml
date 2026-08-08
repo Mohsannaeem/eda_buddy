@@ -17,7 +17,8 @@ runtime:
     - '3009'
   debug:
     gui_mode: false
-    dump_waves: true
+    dump_waves: true          # waves default ON for this component
+    wave_format: wlf          # exercises the Questa-native path
     quiet_sim: false
 
 test_config:

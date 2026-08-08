@@ -354,8 +354,10 @@ groups:
 | `runtime.common_args` | UVM plusargs passed to every test |
 | `runtime.common_args: +UVM_VERBOSITY=` | Default verbosity for this component. Lifted into a `<COMP>_VERBOSITY` Make variable; override per run with `make ... VERBOSITY=UVM_FULL`. Defaults to `UVM_MEDIUM` if unset |
 | `runtime.tool_args.<tool>` | Simulator-specific flags (batch mode, log, etc.) |
-| `debug.quiet_sim` | `true` = send sim output only to log file, not terminal |
-| `debug.dump_waves` | Enable waveform dumping (use `WAVES=1` on make command) |
+| `debug.quiet_sim` | `true` = send sim output only to log file, not terminal. Override per run with `QUIET=` / `--quiet` / `--no-quiet` |
+| `debug.dump_waves` | `true` = dump waves by default. Override per run with `WAVES=` / `--waves` / `--no-waves` |
+| `debug.gui_mode` | `true` = launch the simulator interactively by default. Override with `GUI=` / `--gui` / `--no-gui` |
+| `debug.wave_format` | `vcd` or `wlf`. Override with `WAVE_FORMAT=` / `--wave-format`. `fsdb` is rejected — see section 6 |
 | `test_config.entry_points` | List of all tests. Each has a name, seed, and optional user args |
 | `groups.<name>.tests` | Subset of entry_points to run as a group |
 | `groups.<name>.regression_post_hook` | Shell command executed after the group finishes |
@@ -408,13 +410,27 @@ clean        # remove build/, work/, run/ directories (keeps filelists and Makef
 Every target accepts these on the make command line; `eda-buddy` sets the same
 ones from its flags.
 
-| Variable | Effect | `eda-buddy` flag |
-|---|---|---|
-| `WAVES=1` | Dump waves to `$RUN_DIR/waves.vcd` | `--waves` |
-| `GUI=1` | Launch the simulator interactively | `--gui` |
-| `VERBOSITY=UVM_HIGH` | Override the run YAML's UVM verbosity | `--verbosity` |
-| `JOBS=N` | Run a group's tests N-way parallel | `-j N` |
-| `PYTHON=python3` | Interpreter used for reporting and RMS push | — |
+| Variable | Effect | Default from | `eda-buddy` flag |
+|---|---|---|---|
+| `WAVES=0\|1` | Dump waves into `$RUN_DIR` | `debug.dump_waves` | `--waves` / `--no-waves` |
+| `GUI=0\|1` | Launch the simulator interactively | `debug.gui_mode` | `--gui` / `--no-gui` |
+| `QUIET=0\|1` | Log only, no terminal output | `debug.quiet_sim` | `--quiet` / `--no-quiet` |
+| `WAVE_FORMAT=vcd\|wlf` | Waveform format | `debug.wave_format` | `--wave-format` |
+| `VERBOSITY=UVM_HIGH` | UVM verbosity | `runtime.common_args` | `--verbosity` |
+| `JOBS=N` | Run a group's tests N-way parallel | — | `-j N` |
+| `PYTHON=python3` | Interpreter used for reporting and RMS push | — | — |
+
+Each of these has a per-component default emitted from the run YAML, e.g.
+`MY_VIP_WAVES ?= 1`, and the command-line value wins for that one run. Omitting
+a flag is not the same as switching it off — it leaves the YAML default in
+force, which is why `--no-waves`/`--no-gui`/`--no-quiet` exist.
+
+**Waveform formats.** `vcd` is portable and works with Questa and VCS. `wlf` is
+Questa's native database — it uses `-wlf` plus `log -r /*` rather than a VCD
+dump, and needs no extra libraries. `fsdb` is rejected at generation time: it
+requires the Verdi/Novas PLI, which EDA Buddy does not configure, so emitting it
+would produce a command that fails at run time. If you need FSDB, add the `-pli`
+flags to `runtime.tool_args` yourself. Xcelium has no wave support here.
 
 ---
 
