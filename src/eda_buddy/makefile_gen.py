@@ -1,9 +1,5 @@
 import os
 
-_SCRIPTS_DIR   = os.path.dirname(os.path.abspath(__file__)).replace('\\', '/')
-_REPORT_SCRIPT = f"{_SCRIPTS_DIR}/run_report.py"
-_PUSH_SCRIPT   = f"{_SCRIPTS_DIR}/push_result.py"
-
 
 class MakefileGenerator:
     def __init__(self, component_configs, logger,
@@ -299,12 +295,12 @@ class MakefileGenerator:
             # TOTAL is set by the group target to its own test count (e.g. 7 for smoke_test,
             # 35 for regression). Falls back to all entry_points when run standalone.
             # If run_report.py is missing, print a bold warning and skip — sim result is unaffected.
-            _report_cmd = (f"python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name {t_name} "
+            _report_cmd = (f"$(REPORT_CMD) --single-log $$LOGFILE --test-name {t_name} "
                            f"--total $(if $(TOTAL),$(TOTAL),{total_tests}) "
                            f"$(if $(REGDIR),--comp-run-dir $(REGDIR),)")
-            _skip_msg   = r"printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'"
+            _skip_msg   = r"printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'"
             _sl = (f"SIM_RC=$$?; "
-                   f"if [ -f \"$(REPORT_SCRIPT)\" ]; then {_report_cmd}; else {_skip_msg}; fi; "
+                   f"if [ -n \"$(REPORT_OK)\" ]; then {_report_cmd}; else {_skip_msg}; fi; "
                    f"exit $$SIM_RC")
 
             # VCS
@@ -375,10 +371,10 @@ class MakefileGenerator:
                     f"\t@REGDIR=\"{self._comp_run(name)}/{g_name}_$$(date +%Y%m%d_%H%M%S)\"; \\",
                     f"\tmkdir -p \"$$REGDIR\"; \\",
                     f"\techo \"[{g_name.upper()}] Session dir: $$REGDIR  Total={len(tests)} tests\"; \\",
-                    f"\t$(MAKE) -k REGDIR=$$REGDIR TOTAL={len(tests)} {test_targets} || true; \\",
+                    f"\t$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL={len(tests)} {test_targets} || true; \\",
                     f"\techo \"\"; \\",
-                    f"\tif [ -f \"$(REPORT_SCRIPT)\" ]; then python $(REPORT_SCRIPT) {report_args}; "
-                    r"else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi",
+                    f"\tif [ -n \"$(REPORT_OK)\" ]; then $(REPORT_CMD) {report_args}; "
+                    r"else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi",
                     "",
                 ]
 
@@ -406,12 +402,27 @@ class MakefileGenerator:
             f"ROOT      := {root_posix}",
             f"FLIST_DIR := $(ROOT)/filelists",
             "",
-            # cygpath converts D:/... to /cygdrive/d/... for Cygwin bash; fallback keeps original
-            f"REPORT_SCRIPT := $(shell cygpath -u \"{_REPORT_SCRIPT}\" 2>/dev/null || echo \"{_REPORT_SCRIPT}\")",
-            f"PUSH_SCRIPT   := $(shell cygpath -u \"{_PUSH_SCRIPT}\"   2>/dev/null || echo \"{_PUSH_SCRIPT}\")",
+            "## -- EDA Buddy's own entry points --",
+            "## Invoked as modules rather than file paths: an installed package moves",
+            "## between venvs and site-packages, and a baked-in absolute path goes stale",
+            "## the first time it does. This form keeps working across reinstalls.",
+            "PYTHON     ?= python",
+            "REPORT_CMD := $(PYTHON) -m eda_buddy.run_report",
+            "PUSH_CMD   := $(PYTHON) -m eda_buddy.push_result",
             "",
-            "## NOTE: If REPORT_SCRIPT or PUSH_SCRIPT are missing, reporting/RMS steps",
-            "## are silently skipped with a bold warning — builds and simulations continue.",
+            "## Probe once at parse time: empty when EDA Buddy is not importable.",
+            "REPORT_OK  := $(shell $(PYTHON) -c \"import eda_buddy.run_report\" 2>/dev/null && echo 1)",
+            "",
+            "## NOTE: If EDA Buddy is not importable, reporting/RMS steps are silently",
+            "## skipped with a bold warning — builds and simulations continue.",
+            "",
+            "## -- Parallel test execution within a regression group --",
+            "## Serial by default. `make <group target> JOBS=4` runs that group's tests",
+            "## concurrently; --output-sync keeps each test's output as one block instead",
+            "## of interleaving. Only the group's inner sub-make is affected — generation",
+            "## and build are always serial.",
+            "JOBS ?=",
+            "PARALLEL_FLAGS := $(if $(JOBS),-j$(JOBS) --output-sync=target,)",
             "",
         ]
 
@@ -460,8 +471,8 @@ class MakefileGenerator:
             "",
             "## REPORT — scan all run logs and print pass/fail summary",
             "report:",
-            f"\t@if [ -f \"$(REPORT_SCRIPT)\" ]; then python $(REPORT_SCRIPT) --root $(ROOT) {proj_name_arg}--save-to $(ROOT)/logs/report.txt; "
-            r"else printf '\033[1m[EDA Buddy] Report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi",
+            f"\t@if [ -n \"$(REPORT_OK)\" ]; then $(REPORT_CMD) --root $(ROOT) {proj_name_arg}--save-to $(ROOT)/logs/report.txt; "
+            r"else printf '\033[1m[EDA Buddy] Report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi",
             "",
         ]
 

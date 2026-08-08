@@ -10,11 +10,27 @@ SHELL      := /bin/bash
 ROOT      := __ROOT__
 FLIST_DIR := $(ROOT)/filelists
 
-REPORT_SCRIPT := __EDA_BUDDY_SCRIPT__
-PUSH_SCRIPT   := __EDA_BUDDY_SCRIPT__
+## -- EDA Buddy's own entry points --
+## Invoked as modules rather than file paths: an installed package moves
+## between venvs and site-packages, and a baked-in absolute path goes stale
+## the first time it does. This form keeps working across reinstalls.
+PYTHON     ?= python
+REPORT_CMD := __EDA_BUDDY_SCRIPT__
+PUSH_CMD   := __EDA_BUDDY_SCRIPT__
 
-## NOTE: If REPORT_SCRIPT or PUSH_SCRIPT are missing, reporting/RMS steps
-## are silently skipped with a bold warning — builds and simulations continue.
+## Probe once at parse time: empty when EDA Buddy is not importable.
+REPORT_OK  := __EDA_BUDDY_SCRIPT__
+
+## NOTE: If EDA Buddy is not importable, reporting/RMS steps are silently
+## skipped with a bold warning — builds and simulations continue.
+
+## -- Parallel test execution within a regression group --
+## Serial by default. `make <group target> JOBS=4` runs that group's tests
+## concurrently; --output-sync keeps each test's output as one block instead
+## of interleaving. Only the group's inner sub-make is affected — generation
+## and build are always serial.
+JOBS ?=
+PARALLEL_FLAGS := $(if $(JOBS),-j$(JOBS) --output-sync=target,)
 
 ## -- Component path variables (build/work/run derive from ROOT) --
 COMP_A_BUILD_DIR := $(ROOT)/comp_a/build
@@ -77,7 +93,7 @@ vcs_run_comp_a_comp_a_base_test:
 	 echo "[VCS] Running comp_a_base_test"; \
 	 VCD_ARGS=""; if [ "$(WAVES)" = "1" ]; then VCD_ARGS="+vcs+dumpvars+$$RUN_DIR/waves.vcd"; fi; \
 	 GUI_FLAG=""; if [ "$(GUI)" = "1" ]; then GUI_FLAG="-gui"; fi; \
-	 $(COMP_A_BUILD_DIR)/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME=comp_a_base_test +ntb_random_seed=random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000 -l simv.log  2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name comp_a_base_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi; exit $$SIM_RC
+	 $(COMP_A_BUILD_DIR)/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME=comp_a_base_test +ntb_random_seed=random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000 -l simv.log  2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --single-log $$LOGFILE --test-name comp_a_base_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi; exit $$SIM_RC
 	@echo "[POST-SIM] echo comp_a-post-sim"
 	@echo comp_a-post-sim
 	@echo "[POST-SIM-GLOBAL] echo global-post"
@@ -94,7 +110,7 @@ questa_run_comp_a_comp_a_base_test:
 	 if [ "$(WAVES)" = "1" ]; then DO_CMD="vcd file $$RUN_DIR/waves.vcd; vcd add -r /*; run -all; quit"; fi; \
 	 if [ "$(GUI)" = "1" ]; then DO_CMD="add wave -r /*; run -all"; fi; \
 	 MODE="-batch"; if [ "$(GUI)" = "1" ]; then MODE="-gui"; fi; \
-	 vsim $$MODE -do "$$DO_CMD" -suppress 3009 -lib $(COMP_A_WORK_DIR) db_opt +UVM_TESTNAME=comp_a_base_test -sv_seed random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000  2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name comp_a_base_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi; exit $$SIM_RC
+	 vsim $$MODE -do "$$DO_CMD" -suppress 3009 -lib $(COMP_A_WORK_DIR) db_opt +UVM_TESTNAME=comp_a_base_test -sv_seed random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000  2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --single-log $$LOGFILE --test-name comp_a_base_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi; exit $$SIM_RC
 	@echo "[POST-SIM] echo comp_a-post-sim"
 	@echo comp_a-post-sim
 	@echo "[POST-SIM-GLOBAL] echo global-post"
@@ -107,7 +123,7 @@ xcelium_run_comp_a_comp_a_base_test:
 	@echo comp_a-pre-sim
 	@if [ -n "$(REGDIR)" ]; then RUN_DIR=$(REGDIR)/comp_a_base_test; else mkdir -p $(COMP_A_RUN_DIR)/comp_a_base_test; RUN_ID=$$(date +%Y%m%d_%H%M%S); RUN_DIR=$(COMP_A_RUN_DIR)/comp_a_base_test/run_$$RUN_ID; fi; mkdir -p $$RUN_DIR; LOGFILE=$$RUN_DIR/sim.log; \
 	 echo "[XCELIUM] Running comp_a_base_test"; \
-	 $(COMP_A_BUILD_DIR)/simv +UVM_TESTNAME=comp_a_base_test -svseed random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000   2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name comp_a_base_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi; exit $$SIM_RC
+	 $(COMP_A_BUILD_DIR)/simv +UVM_TESTNAME=comp_a_base_test -svseed random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000   2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --single-log $$LOGFILE --test-name comp_a_base_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi; exit $$SIM_RC
 	@echo "[POST-SIM] echo comp_a-post-sim"
 	@echo comp_a-post-sim
 	@echo "[POST-SIM-GLOBAL] echo global-post"
@@ -122,7 +138,7 @@ vcs_run_comp_a_comp_a_burst_test:
 	 echo "[VCS] Running comp_a_burst_test"; \
 	 VCD_ARGS=""; if [ "$(WAVES)" = "1" ]; then VCD_ARGS="+vcs+dumpvars+$$RUN_DIR/waves.vcd"; fi; \
 	 GUI_FLAG=""; if [ "$(GUI)" = "1" ]; then GUI_FLAG="-gui"; fi; \
-	 $(COMP_A_BUILD_DIR)/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME=comp_a_burst_test +ntb_random_seed=12345 +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000 -l simv.log +BURST_LEN=16 2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name comp_a_burst_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi; exit $$SIM_RC
+	 $(COMP_A_BUILD_DIR)/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME=comp_a_burst_test +ntb_random_seed=12345 +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000 -l simv.log +BURST_LEN=16 2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --single-log $$LOGFILE --test-name comp_a_burst_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi; exit $$SIM_RC
 	@echo "[POST-SIM] echo comp_a-post-sim"
 	@echo comp_a-post-sim
 	@echo "[POST-SIM-GLOBAL] echo global-post"
@@ -139,7 +155,7 @@ questa_run_comp_a_comp_a_burst_test:
 	 if [ "$(WAVES)" = "1" ]; then DO_CMD="vcd file $$RUN_DIR/waves.vcd; vcd add -r /*; run -all; quit"; fi; \
 	 if [ "$(GUI)" = "1" ]; then DO_CMD="add wave -r /*; run -all"; fi; \
 	 MODE="-batch"; if [ "$(GUI)" = "1" ]; then MODE="-gui"; fi; \
-	 vsim $$MODE -do "$$DO_CMD" -suppress 3009 -lib $(COMP_A_WORK_DIR) db_opt +UVM_TESTNAME=comp_a_burst_test -sv_seed 12345 +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000 +BURST_LEN=16 2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name comp_a_burst_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi; exit $$SIM_RC
+	 vsim $$MODE -do "$$DO_CMD" -suppress 3009 -lib $(COMP_A_WORK_DIR) db_opt +UVM_TESTNAME=comp_a_burst_test -sv_seed 12345 +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000 +BURST_LEN=16 2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --single-log $$LOGFILE --test-name comp_a_burst_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi; exit $$SIM_RC
 	@echo "[POST-SIM] echo comp_a-post-sim"
 	@echo comp_a-post-sim
 	@echo "[POST-SIM-GLOBAL] echo global-post"
@@ -152,7 +168,7 @@ xcelium_run_comp_a_comp_a_burst_test:
 	@echo comp_a-pre-sim
 	@if [ -n "$(REGDIR)" ]; then RUN_DIR=$(REGDIR)/comp_a_burst_test; else mkdir -p $(COMP_A_RUN_DIR)/comp_a_burst_test; RUN_ID=$$(date +%Y%m%d_%H%M%S); RUN_DIR=$(COMP_A_RUN_DIR)/comp_a_burst_test/run_$$RUN_ID; fi; mkdir -p $$RUN_DIR; LOGFILE=$$RUN_DIR/sim.log; \
 	 echo "[XCELIUM] Running comp_a_burst_test"; \
-	 $(COMP_A_BUILD_DIR)/simv +UVM_TESTNAME=comp_a_burst_test -svseed 12345 +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000  +BURST_LEN=16 2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name comp_a_burst_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi; exit $$SIM_RC
+	 $(COMP_A_BUILD_DIR)/simv +UVM_TESTNAME=comp_a_burst_test -svseed 12345 +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_A_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=10 +UVM_TIMEOUT=100000000  +BURST_LEN=16 2>&1 | tee $$LOGFILE; SIM_RC=$$?; if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --single-log $$LOGFILE --test-name comp_a_burst_test --total $(if $(TOTAL),$(TOTAL),2) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi; exit $$SIM_RC
 	@echo "[POST-SIM] echo comp_a-post-sim"
 	@echo comp_a-post-sim
 	@echo "[POST-SIM-GLOBAL] echo global-post"
@@ -163,54 +179,54 @@ vcs_run_comp_a_smoke_test:
 	@REGDIR="$(COMP_A_RUN_DIR)/smoke_test_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[SMOKE_TEST] Session dir: $$REGDIR  Total=1 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=1 vcs_run_comp_a_comp_a_base_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=1 vcs_run_comp_a_comp_a_base_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: questa_run_comp_a_smoke_test
 questa_run_comp_a_smoke_test:
 	@REGDIR="$(COMP_A_RUN_DIR)/smoke_test_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[SMOKE_TEST] Session dir: $$REGDIR  Total=1 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=1 questa_run_comp_a_comp_a_base_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=1 questa_run_comp_a_comp_a_base_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: xcelium_run_comp_a_smoke_test
 xcelium_run_comp_a_smoke_test:
 	@REGDIR="$(COMP_A_RUN_DIR)/smoke_test_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[SMOKE_TEST] Session dir: $$REGDIR  Total=1 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=1 xcelium_run_comp_a_comp_a_base_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=1 xcelium_run_comp_a_comp_a_base_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: vcs_run_comp_a_regression
 vcs_run_comp_a_regression:
 	@REGDIR="$(COMP_A_RUN_DIR)/regression_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[REGRESSION] Session dir: $$REGDIR  Total=2 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=2 vcs_run_comp_a_comp_a_base_test vcs_run_comp_a_comp_a_burst_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=2 vcs_run_comp_a_comp_a_base_test vcs_run_comp_a_comp_a_burst_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test,comp_a_burst_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test,comp_a_burst_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: questa_run_comp_a_regression
 questa_run_comp_a_regression:
 	@REGDIR="$(COMP_A_RUN_DIR)/regression_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[REGRESSION] Session dir: $$REGDIR  Total=2 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=2 questa_run_comp_a_comp_a_base_test questa_run_comp_a_comp_a_burst_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=2 questa_run_comp_a_comp_a_base_test questa_run_comp_a_comp_a_burst_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test,comp_a_burst_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test,comp_a_burst_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: xcelium_run_comp_a_regression
 xcelium_run_comp_a_regression:
 	@REGDIR="$(COMP_A_RUN_DIR)/regression_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[REGRESSION] Session dir: $$REGDIR  Total=2 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=2 xcelium_run_comp_a_comp_a_base_test xcelium_run_comp_a_comp_a_burst_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=2 xcelium_run_comp_a_comp_a_base_test xcelium_run_comp_a_comp_a_burst_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test,comp_a_burst_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_a --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_a_base_test,comp_a_burst_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt ; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 ## ======================================================
 ## COMPONENT: comp_b
@@ -237,7 +253,7 @@ vcs_run_comp_b_comp_b_base_test:
 	 echo "[VCS] Running comp_b_base_test"; \
 	 VCD_ARGS=""; if [ "$(WAVES)" = "1" ]; then VCD_ARGS="+vcs+dumpvars+$$RUN_DIR/waves.vcd"; fi; \
 	 GUI_FLAG=""; if [ "$(GUI)" = "1" ]; then GUI_FLAG="-gui"; fi; \
-	 $(COMP_B_BUILD_DIR)/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME=comp_b_base_test +ntb_random_seed=random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_B_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=1   > $$LOGFILE 2>&1; SIM_RC=$$?; if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name comp_b_base_test --total $(if $(TOTAL),$(TOTAL),1) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi; exit $$SIM_RC
+	 $(COMP_B_BUILD_DIR)/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME=comp_b_base_test +ntb_random_seed=random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_B_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=1   > $$LOGFILE 2>&1; SIM_RC=$$?; if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --single-log $$LOGFILE --test-name comp_b_base_test --total $(if $(TOTAL),$(TOTAL),1) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi; exit $$SIM_RC
 	@echo "[POST-SIM-GLOBAL] echo global-post"
 	@echo global-post
 
@@ -250,7 +266,7 @@ questa_run_comp_b_comp_b_base_test:
 	 if [ "$(WAVES)" = "1" ]; then DO_CMD="vcd file $$RUN_DIR/waves.vcd; vcd add -r /*; run -all; quit"; fi; \
 	 if [ "$(GUI)" = "1" ]; then DO_CMD="add wave -r /*; run -all"; fi; \
 	 MODE="-batch"; if [ "$(GUI)" = "1" ]; then MODE="-gui"; fi; \
-	 vsim $$MODE -do "$$DO_CMD"  -lib $(COMP_B_WORK_DIR) db_opt +UVM_TESTNAME=comp_b_base_test -sv_seed random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_B_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=1  > $$LOGFILE 2>&1; SIM_RC=$$?; if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name comp_b_base_test --total $(if $(TOTAL),$(TOTAL),1) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi; exit $$SIM_RC
+	 vsim $$MODE -do "$$DO_CMD"  -lib $(COMP_B_WORK_DIR) db_opt +UVM_TESTNAME=comp_b_base_test -sv_seed random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_B_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=1  > $$LOGFILE 2>&1; SIM_RC=$$?; if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --single-log $$LOGFILE --test-name comp_b_base_test --total $(if $(TOTAL),$(TOTAL),1) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi; exit $$SIM_RC
 	@echo "[POST-SIM-GLOBAL] echo global-post"
 	@echo global-post
 
@@ -259,7 +275,7 @@ xcelium_run_comp_b_comp_b_base_test:
 	@echo global-pre
 	@if [ -n "$(REGDIR)" ]; then RUN_DIR=$(REGDIR)/comp_b_base_test; else mkdir -p $(COMP_B_RUN_DIR)/comp_b_base_test; RUN_ID=$$(date +%Y%m%d_%H%M%S); RUN_DIR=$(COMP_B_RUN_DIR)/comp_b_base_test/run_$$RUN_ID; fi; mkdir -p $$RUN_DIR; LOGFILE=$$RUN_DIR/sim.log; \
 	 echo "[XCELIUM] Running comp_b_base_test"; \
-	 $(COMP_B_BUILD_DIR)/simv +UVM_TESTNAME=comp_b_base_test -svseed random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_B_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=1 -licqueue  > $$LOGFILE 2>&1; SIM_RC=$$?; if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name comp_b_base_test --total $(if $(TOTAL),$(TOTAL),1) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi; exit $$SIM_RC
+	 $(COMP_B_BUILD_DIR)/simv +UVM_TESTNAME=comp_b_base_test -svseed random +UVM_VERBOSITY=$(if $(VERBOSITY),$(VERBOSITY),$(COMP_B_VERBOSITY)) +RUN_DIR=$$RUN_DIR +UVM_MAX_QUIT_COUNT=1 -licqueue  > $$LOGFILE 2>&1; SIM_RC=$$?; if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --single-log $$LOGFILE --test-name comp_b_base_test --total $(if $(TOTAL),$(TOTAL),1) $(if $(REGDIR),--comp-run-dir $(REGDIR),); else printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi; exit $$SIM_RC
 	@echo "[POST-SIM-GLOBAL] echo global-post"
 	@echo global-post
 
@@ -270,9 +286,9 @@ vcs_run_comp_b_nightly:
 	@REGDIR="$(COMP_B_RUN_DIR)/nightly_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[NIGHTLY] Session dir: $$REGDIR  Total=1 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=1 vcs_run_comp_b_comp_b_base_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=1 vcs_run_comp_b_comp_b_base_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo comp_b-post-nightly {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo comp_b-post-nightly {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: questa_run_comp_b_nightly
 questa_run_comp_b_nightly:
@@ -281,9 +297,9 @@ questa_run_comp_b_nightly:
 	@REGDIR="$(COMP_B_RUN_DIR)/nightly_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[NIGHTLY] Session dir: $$REGDIR  Total=1 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=1 questa_run_comp_b_comp_b_base_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=1 questa_run_comp_b_comp_b_base_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo comp_b-post-nightly {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo comp_b-post-nightly {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: xcelium_run_comp_b_nightly
 xcelium_run_comp_b_nightly:
@@ -292,36 +308,36 @@ xcelium_run_comp_b_nightly:
 	@REGDIR="$(COMP_B_RUN_DIR)/nightly_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[NIGHTLY] Session dir: $$REGDIR  Total=1 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=1 xcelium_run_comp_b_comp_b_base_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=1 xcelium_run_comp_b_comp_b_base_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo comp_b-post-nightly {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo comp_b-post-nightly {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: vcs_run_comp_b_legacy_group
 vcs_run_comp_b_legacy_group:
 	@REGDIR="$(COMP_B_RUN_DIR)/legacy_group_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[LEGACY_GROUP] Session dir: $$REGDIR  Total=1 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=1 vcs_run_comp_b_comp_b_base_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=1 vcs_run_comp_b_comp_b_base_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo legacy-post {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo legacy-post {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: questa_run_comp_b_legacy_group
 questa_run_comp_b_legacy_group:
 	@REGDIR="$(COMP_B_RUN_DIR)/legacy_group_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[LEGACY_GROUP] Session dir: $$REGDIR  Total=1 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=1 questa_run_comp_b_comp_b_base_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=1 questa_run_comp_b_comp_b_base_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo legacy-post {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo legacy-post {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 .PHONY: xcelium_run_comp_b_legacy_group
 xcelium_run_comp_b_legacy_group:
 	@REGDIR="$(COMP_B_RUN_DIR)/legacy_group_$$(date +%Y%m%d_%H%M%S)"; \
 	mkdir -p "$$REGDIR"; \
 	echo "[LEGACY_GROUP] Session dir: $$REGDIR  Total=1 tests"; \
-	$(MAKE) -k REGDIR=$$REGDIR TOTAL=1 xcelium_run_comp_b_comp_b_base_test || true; \
+	$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL=1 xcelium_run_comp_b_comp_b_base_test || true; \
 	echo ""; \
-	if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo legacy-post {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --component comp_b --project-name "GOLDEN_FIXTURE_PROJECT" --tests comp_b_base_test --reg-dir $$REGDIR --save-to $$REGDIR/report.txt --post-cmd "echo legacy-post {total} {passed} {failed}"; else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi
 
 ## ======================================================
 ## UTILITIES
@@ -333,4 +349,4 @@ clean:
 
 ## REPORT — scan all run logs and print pass/fail summary
 report:
-	@if [ -f "$(REPORT_SCRIPT)" ]; then python $(REPORT_SCRIPT) --root $(ROOT) --project-name "GOLDEN_FIXTURE_PROJECT" --save-to $(ROOT)/logs/report.txt; else printf '\033[1m[EDA Buddy] Report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi
+	@if [ -n "$(REPORT_OK)" ]; then $(REPORT_CMD) --root $(ROOT) --project-name "GOLDEN_FIXTURE_PROJECT" --save-to $(ROOT)/logs/report.txt; else printf '\033[1m[EDA Buddy] Report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi

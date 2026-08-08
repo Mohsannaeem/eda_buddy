@@ -469,7 +469,7 @@ def run_report(root, project_name='', component=None, save_to=None,
 
 # ── CLI entry point (invoked from Makefile) ───────────────────────────────────
 
-if __name__ == '__main__':
+def main():
     import argparse
     p = argparse.ArgumentParser(description='EDA Buddy Test Run Report')
 
@@ -503,3 +503,7 @@ if __name__ == '__main__':
                    tests=tests, reg_dir=reg_dir, post_cmd=a.post_cmd)
     else:
         p.error('Provide either --single-log <path> or --root <path>')
+
+
+if __name__ == '__main__':
+    main()
