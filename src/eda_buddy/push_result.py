@@ -51,45 +51,73 @@ def _warn_rms_unavailable(url, reason):
     print(f"")
 
 
-def main():
-    args = parse_args()
+DEFAULT_URL = "http://localhost:8000"
+
+
+def push(regression_id, total, passed, failed,
+         url=DEFAULT_URL, start=None, end=None, log=None):
+    """Push one result to the RMS. Returns an exit code; never raises.
+
+    Callable directly so run_report can push in-process, with no shell command
+    to quote and no interpreter path to get wrong on the way.
+    """
+    url = url or DEFAULT_URL
 
     if not _HAS_REQUESTS:
-        _warn_rms_unavailable(args.url, "'requests' package not installed (pip install requests)")
-        sys.exit(0)
+        _warn_rms_unavailable(url, "'requests' package not installed (pip install requests)")
+        return 0
 
-    if args.passed + args.failed > args.total:
-        print(f"[RMS] ERROR: passed ({args.passed}) + failed ({args.failed}) exceeds total ({args.total})")
-        sys.exit(1)
+    if passed + failed > total:
+        print(f"[RMS] ERROR: passed ({passed}) + failed ({failed}) exceeds total ({total})")
+        return 1
+
+    if not regression_id:
+        print("[RMS] ERROR: no regression id given; nothing to push to.")
+        return 1
 
     payload = {
-        "id":           args.id,
-        "total_tests":  args.total,
-        "passed_tests": args.passed,
-        "failed_tests": args.failed,
+        "id":           regression_id,
+        "total_tests":  total,
+        "passed_tests": passed,
+        "failed_tests": failed,
     }
-    if args.start: payload["start_time"] = args.start
-    if args.end:   payload["end_time"]   = args.end
-    if args.log:   payload["log_path"]   = args.log
+    if start: payload["start_time"] = start
+    if end:   payload["end_time"]   = end
+    if log:   payload["log_path"]   = log
 
+    return _post(payload, url, regression_id)
+
+
+def main():
+    args = parse_args()
+    return push(args.id, args.total, args.passed, args.failed,
+                url=args.url, start=args.start, end=args.end, log=args.log)
+
+
+def _post(payload, url, regression_id):
+    """POST the payload and report the outcome. Returns an exit code.
+
+    Every failure path returns 0: a reporting problem must never fail the
+    regression that produced the results.
+    """
     # ASCII only: this runs on a Windows cp1252 console where a Unicode arrow
     # raises UnicodeEncodeError and would abort the regression flow.
-    print(f"[RMS] Pushing result for '{args.id}' -> {args.url} ...")
+    print(f"[RMS] Pushing result for '{regression_id}' -> {url} ...")
 
     try:
-        r = requests.post(f"{args.url}/api/runs/result", json=payload, timeout=10)
+        r = requests.post(f"{url}/api/runs/result", json=payload, timeout=10)
 
     except requests.ConnectionError:
-        _warn_rms_unavailable(args.url, "Connection refused — server is not running")
-        sys.exit(0)
+        _warn_rms_unavailable(url, "Connection refused - server is not running")
+        return 0
 
     except requests.Timeout:
-        _warn_rms_unavailable(args.url, "Request timed out after 10 seconds")
-        sys.exit(0)
+        _warn_rms_unavailable(url, "Request timed out after 10 seconds")
+        return 0
 
     except Exception as e:
-        _warn_rms_unavailable(args.url, str(e))
-        sys.exit(0)
+        _warn_rms_unavailable(url, str(e))
+        return 0
 
     if r.status_code == 201:
         data = r.json()
@@ -102,15 +130,16 @@ def main():
         print(f"[RMS]   Failed     : {data['failed_tests']}")
         print(f"[RMS]   Pass rate  : {rate}%")
         print(f"[RMS]   Executed at: {data['executed_at']}")
+        return 0
 
     elif r.status_code == 404:
         detail = r.json().get('detail', r.text) if r.headers.get('content-type', '').startswith('application/json') else r.text
         _warn_rms_unavailable(
-            args.url,
-            f"Regression '{args.id}' not found in RMS (404). Create it in the GUI first."
+            url,
+            f"Regression '{regression_id}' not found in RMS (404). Create it in the GUI first."
         )
         print(f"[RMS] Server said: {detail}")
-        sys.exit(0)
+        return 0
 
     elif r.status_code in (401, 403):
         # This script deliberately sends no X-API-Key header. An RMS with auth
@@ -121,7 +150,7 @@ def main():
                   else r.text)
         print(f"")
         print(f"[RMS] WARNING: Result was NOT pushed - rejected by the server ({r.status_code}).")
-        print(f"[RMS] Server : {args.url}")
+        print(f"[RMS] Server : {url}")
         print(f"[RMS] Reason : {detail}")
         print(f"[RMS] This RMS requires an API key. push_result.py does not send one,")
         print(f"[RMS] so every push will be rejected until either:")
@@ -129,12 +158,12 @@ def main():
         print(f"[RMS]   - API key support is re-enabled in push_result.py")
         print(f"[RMS] The regression itself is unaffected.")
         print(f"")
-        sys.exit(0)
+        return 0
 
     else:
         print(f"[RMS] Unexpected response {r.status_code}: {r.text}")
-        sys.exit(0)
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

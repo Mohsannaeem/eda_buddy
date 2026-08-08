@@ -360,7 +360,9 @@ groups:
 | `debug.wave_format` | `vcd` or `wlf`. Override with `WAVE_FORMAT=` / `--wave-format`. `fsdb` is rejected — see section 6 |
 | `test_config.entry_points` | List of all tests. Each has a name, seed, and optional user args |
 | `groups.<name>.tests` | Subset of entry_points to run as a group |
-| `groups.<name>.regression_post_hook` | Shell command executed after the group finishes |
+| `groups.<name>.rms_id` | RMS regression id. Results are pushed automatically after the group finishes — see section 11 |
+| `groups.<name>.hooks.pre/post` | Shell commands run before/after the group. `{total}`/`{passed}`/`{failed}` are substituted in `post` |
+| `groups.<name>.regression_post_hook` | Legacy alias for `hooks.post` |
 
 ### UVM_TIMEOUT value
 
@@ -592,18 +594,41 @@ EDA Buddy can automatically push regression results to an RMS (Result Management
 ### Setup
 1. Start the RMS server: `cd <path-to-RMS> && python backend/main.py`
 2. Open the RMS GUI and create a regression with the ID you want to use
-3. Add a `regression_post_hook` to your group in the runtime YAML:
+3. Add `rms_id` to your group in the runtime YAML:
 
 ```yaml
 groups:
   regression:
-    regression_post_hook: "python -m eda_buddy.push_result --id MY_VIP_REGRESSION --total {total} --passed {passed} --failed {failed}"
+    rms_id: MY_VIP_REGRESSION      # must already exist in the RMS GUI
     tests:
     - my_first_test
     - my_second_test
 ```
 
-The `{total}`, `{passed}`, and `{failed}` placeholders are automatically substituted with the actual results from that regression session.
+That is the whole configuration. EDA Buddy pushes the session's tallies itself,
+in the same process that produced the report — no interpreter path to quote, no
+`{total}` placeholders to template, and nothing that breaks when the package
+moves. The id must match a regression registered in the RMS exactly, or the push
+returns 404.
+
+Set `RMS_URL` (or pass `--rms-url` to `run_report`) if the backend is not on
+`http://localhost:8000`.
+
+**Custom post-run commands** still use `hooks.post`, which is unchanged and runs
+alongside `rms_id`:
+
+```yaml
+groups:
+  regression:
+    rms_id: MY_VIP_REGRESSION
+    hooks:
+      post: "curl -X POST $SLACK_WEBHOOK -d '{\"text\":\"{passed}/{total} passed\"}'"
+```
+
+The older form — a `hooks.post` or `regression_post_hook` that invokes
+`push_result` by hand — keeps working. Prefer `rms_id`: a hand-written hook has
+to name an interpreter, and the one the shell picks is not always the one that
+can import `eda_buddy`.
 
 ### Graceful failure
 If the RMS server is not running, the script prints a warning and exits cleanly — the regression flow is **not** interrupted:

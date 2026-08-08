@@ -474,6 +474,20 @@ def run_report(root, project_name='', component=None, save_to=None,
         print(f"[POST-CMD] {cmd}")
         subprocess.run(cmd, shell=True, check=False)
 
+
+def push_to_rms(rms_id, root, component=None, reg_dir=None, url=None):
+    """Push this session's tallies to the RMS, in this process.
+
+    Calling push_result directly rather than shelling out avoids the two things
+    that broke the equivalent post-cmd hook: quoting an interpreter path the
+    shell may not resolve, and Windows/Cygwin path rewriting.
+    """
+    from .push_result import push
+
+    passed, failed, timeout = _scan_run_dir(reg_dir or os.path.join(root, component or '', 'run'))
+    total = passed + failed + timeout
+    return push(rms_id, total, passed, failed + timeout, url=url, log=reg_dir)
+
 # ── CLI entry point (invoked from Makefile) ───────────────────────────────────
 
 def main():
@@ -495,6 +509,10 @@ def main():
     p.add_argument('--reg-dir',      default=None, help='Regression session dir to scan for logs')
     p.add_argument('--post-cmd',     default=None,
                    help='Shell command run after report; {total}/{passed}/{failed} substituted with actual counts')
+    p.add_argument('--rms-id',       default=None,
+                   help='RMS regression id; results are pushed in-process, no shell command needed')
+    p.add_argument('--rms-url',      default=None,
+                   help='RMS base URL (default: $RMS_URL or http://localhost:8000)')
 
     a = p.parse_args()
 
@@ -508,6 +526,9 @@ def main():
         reg_dir = a.reg_dir or None
         run_report(a.root, a.project_name, a.component, a.save_to,
                    tests=tests, reg_dir=reg_dir, post_cmd=a.post_cmd)
+        # After the report, so the RMS row reflects the same tallies just printed.
+        if a.rms_id:
+            push_to_rms(a.rms_id, a.root, a.component, reg_dir, a.rms_url)
     else:
         p.error('Provide either --single-log <path> or --root <path>')
 

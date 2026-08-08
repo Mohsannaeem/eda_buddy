@@ -445,17 +445,22 @@ class MakefileGenerator:
                 tests      = g_val
                 pre_hook   = ''
                 post_hook  = ''
+                rms_id     = ''
             else:
                 tests     = g_val.get('tests', [])
                 grp_hooks = g_val.get('hooks', {}) or {}
                 pre_hook  = (grp_hooks.get('pre') or '').strip()
                 # hooks.post takes precedence; fall back to legacy regression_post_hook key
                 post_hook = (grp_hooks.get('post') or g_val.get('regression_post_hook') or '').strip()
+                # rms_id replaces hand-written push_result hooks: no interpreter
+                # path, no shell quoting, no {total}/{passed}/{failed} templating.
+                rms_id    = str(g_val.get('rms_id') or '').strip()
 
             if not tests:
                 continue
 
             post_cmd_arg  = f'--post-cmd "{post_hook}"' if post_hook else ''
+            rms_id_arg    = f'--rms-id {rms_id}' if rms_id else ''
             pre_hook_lines = self._hook_lines(f"PRE-{g_name.upper()}", pre_hook)
 
             for tool in ('vcs', 'questa', 'xcelium'):
@@ -465,7 +470,7 @@ class MakefileGenerator:
                 # $(MAKE) -k keeps going on failures; || true lets the chain continue.
                 report_args = (f'--root $(ROOT) --component {name} {proj_name_arg} '
                                f'--tests {tests_csv} --reg-dir $$REGDIR --save-to $$REGDIR/report.txt '
-                               f'{post_cmd_arg}')
+                               f'{post_cmd_arg} {rms_id_arg}')
                 content += [
                     f".PHONY: {tool}_run_{name}_{g_name}",
                     f"{tool}_run_{name}_{g_name}:",

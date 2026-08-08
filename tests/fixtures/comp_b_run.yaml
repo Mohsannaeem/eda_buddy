@@ -24,6 +24,7 @@ groups:
   nightly:
     tests:
     - comp_b_base_test
+    rms_id: COMP_B_NIGHTLY        # in-process RMS push, no shell command
     hooks:
       pre: echo comp_b-pre-nightly
       post: echo comp_b-post-nightly {total} {passed} {failed}
