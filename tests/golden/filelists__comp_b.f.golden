@@ -1,0 +1,4 @@
+## Filelist for comp_b — source root resolved from $COMP_B_SRC_DIR
++incdir+${COMP_B_SRC_DIR}/env
+${COMP_B_SRC_DIR}/top/comp_b_pkg.sv
+${COMP_B_SRC_DIR}/top/comp_b_tb_top.sv

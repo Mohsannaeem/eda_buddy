@@ -1,0 +1,31 @@
+# comp_b — exercises: single toolchain (xcelium only, so vcs/questa build targets
+# must NOT be emitted), no dependencies, no defines, empty hooks.
+project:
+  name: comp_b
+  top_module: comp_b_tb_top
+  timescale: 1ns/1ps
+
+paths:
+  root_dir: __FIXDIR__/comp_b
+
+compilation:
+  include_dirs:
+  - env
+  sources:
+    interfaces: []
+    packages:
+    - top/comp_b_pkg.sv
+    modules:
+    - top/comp_b_tb_top.sv
+
+tool_settings:
+  xcelium:
+    compile_flags:
+    - -sv
+    - -uvm
+    elaborate_flags:
+    - -top ${project.top_module}
+
+hooks:
+  pre: ''
+  post: ''

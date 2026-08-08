@@ -1,0 +1,45 @@
+# comp_a runtime — exercises: explicit +UVM_VERBOSITY in common_args (lifted into
+# the COMP_A_VERBOSITY make var), questa tool_args carrying -batch/-do that must be
+# stripped, per-test user_args, quiet_sim=false (tee to terminal), list-form groups.
+runtime:
+  common_args:
+  - +UVM_VERBOSITY=UVM_LOW
+  - +UVM_MAX_QUIT_COUNT=10
+  - +UVM_TIMEOUT=100000000
+  tool_args:
+    vcs:
+    - -l simv.log
+    questa:
+    - -batch
+    - -do
+    - 'run -all; quit'
+    - -suppress
+    - '3009'
+  debug:
+    gui_mode: false
+    dump_waves: true
+    quiet_sim: false
+
+test_config:
+  active_test: comp_a_base_test
+  entry_points:
+  - name: comp_a_base_test
+    description: baseline data path
+    seed: random
+    user_args: []
+  - name: comp_a_burst_test
+    description: burst traffic
+    seed: 12345
+    user_args:
+    - +BURST_LEN=16
+
+groups:
+  smoke_test:
+  - comp_a_base_test
+  regression:
+  - comp_a_base_test
+  - comp_a_burst_test
+
+hooks:
+  pre: echo comp_a-pre-sim
+  post: echo comp_a-post-sim

@@ -1,0 +1,37 @@
+# comp_b runtime — exercises: NO +UVM_VERBOSITY in common_args (so the generator
+# must fall back to UVM_MEDIUM), quiet_sim=true (redirect, no tee), dict-form groups
+# with hooks.pre/hooks.post, and the legacy regression_post_hook key on a second group.
+runtime:
+  common_args:
+  - +UVM_MAX_QUIT_COUNT=1
+  tool_args:
+    xcelium:
+    - -licqueue
+  debug:
+    gui_mode: false
+    dump_waves: false
+    quiet_sim: true
+
+test_config:
+  active_test: comp_b_base_test
+  entry_points:
+  - name: comp_b_base_test
+    description: baseline
+    seed: random
+    user_args: []
+
+groups:
+  nightly:
+    tests:
+    - comp_b_base_test
+    hooks:
+      pre: echo comp_b-pre-nightly
+      post: echo comp_b-post-nightly {total} {passed} {failed}
+  legacy_group:
+    tests:
+    - comp_b_base_test
+    regression_post_hook: echo legacy-post {total} {passed} {failed}
+
+hooks:
+  pre: ''
+  post: ''
