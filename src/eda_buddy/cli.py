@@ -11,6 +11,7 @@ Nothing here re-implements how a simulation is launched.
 """
 
 import argparse
+import os
 import sys
 
 from . import __version__
@@ -22,8 +23,12 @@ _LEGACY_FLAG = "--gen-makefile"
 
 
 def _add_common(p):
-    p.add_argument("--project-cfg", default="project_structure.yaml",
-                   help="Path to project structure YAML (default: %(default)s)")
+    # $EDA_BUDDY_PROJECT_CFG lets an environment script point at the project once,
+    # so commands can be run from any directory without repeating --project-cfg.
+    p.add_argument("--project-cfg",
+                   default=os.environ.get("EDA_BUDDY_PROJECT_CFG") or "project_structure.yaml",
+                   help="Path to project structure YAML "
+                        "(default: $EDA_BUDDY_PROJECT_CFG or %(default)s)")
     p.add_argument("--make", default=None,
                    help="make executable. Overrides tools.make and $EDA_BUDDY_MAKE")
     p.add_argument("--dry-run", action="store_true",

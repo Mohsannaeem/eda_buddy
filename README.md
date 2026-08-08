@@ -802,6 +802,20 @@ eda-buddy clean                          Remove build/, work/, run/
 | `--verbosity V` | run, all | `VERBOSITY=V` |
 | `-j N`, `--jobs N` | run, all | `JOBS=N` — parallel tests within a group |
 
+**Environment variables**
+
+| Variable | Effect |
+|---|---|
+| `EDA_BUDDY_PROJECT_CFG` | Default for `--project-cfg`, so commands work from any directory |
+| `EDA_BUDDY_MAKE` | Fallback make executable |
+
+Set these once per shell from an environment script rather than repeating flags.
+On Windows they must hold Windows-form paths (`D:/...`), not Cygwin-form
+(`/d/...`) — `eda-buddy` runs on native Python, which cannot open the latter.
+
+If the interpreter's Scripts directory is not on PATH, `python -m eda_buddy`
+is equivalent to the `eda-buddy` command in every respect.
+
 **How `make` is located**, first hit wins:
 `--make` → `tools.make` → `$EDA_BUDDY_MAKE` → `make` on PATH.
 
