@@ -58,9 +58,17 @@ def _add_run_opts(p):
 
     p.add_argument("--wave-format", default=None, choices=("vcd", "wlf"),
                    help="Waveform format, overriding runtime.debug.wave_format")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--push-results", dest="push_results", action="store_const",
+                   const="1", default=None,
+                   help="Publish this session's results to the RMS regression named "
+                        "by the group's rms_id")
+    g.add_argument("--no-push-results", dest="push_results", action="store_const",
+                   const="0", help="Do not publish results (the default)")
+
     p.add_argument("--rms-id", default=None, metavar="ID",
-                   help="Push this session's results to RMS regression ID, "
-                        "overriding the group's rms_id")
+                   help="RMS regression to publish to, overriding the group's "
+                        "rms_id. Implies --push-results")
     p.add_argument("--verbosity", default=None,
                    help="Override UVM verbosity for this run, e.g. UVM_HIGH (VERBOSITY=)")
     p.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
@@ -111,14 +119,22 @@ def _run_vars(args):
     A None here means "not specified", and Runner.make drops it, leaving the
     per-component default from run.yaml in force.
     """
+    rms_id = getattr(args, "rms_id", None)
+    push   = getattr(args, "push_results", None)
+    # Naming a regression is a clear statement of intent to publish to it, so it
+    # implies the flag — but an explicit --no-push-results still wins.
+    if rms_id and push is None:
+        push = "1"
+
     return {
-        "WAVES":       getattr(args, "waves", None),
-        "GUI":         getattr(args, "gui", None),
-        "QUIET":       getattr(args, "quiet", None),
-        "WAVE_FORMAT": getattr(args, "wave_format", None),
-        "VERBOSITY":   getattr(args, "verbosity", None),
-        "RMS_ID":      getattr(args, "rms_id", None),
-        "JOBS":        getattr(args, "jobs", None),
+        "WAVES":        getattr(args, "waves", None),
+        "GUI":          getattr(args, "gui", None),
+        "QUIET":        getattr(args, "quiet", None),
+        "WAVE_FORMAT":  getattr(args, "wave_format", None),
+        "VERBOSITY":    getattr(args, "verbosity", None),
+        "PUSH_RESULTS": push,
+        "RMS_ID":       rms_id,
+        "JOBS":         getattr(args, "jobs", None),
     }
 
 

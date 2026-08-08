@@ -460,11 +460,12 @@ class MakefileGenerator:
                 continue
 
             post_cmd_arg  = f'--post-cmd "{post_hook}"' if post_hook else ''
-            # RMS_ID on the make line wins over the group's rms_id, so a session
-            # can be pushed to a different regression — or to one at all, when the
-            # YAML names none — without editing the YAML.
-            _static_rms   = f'--rms-id {rms_id}' if rms_id else ''
-            rms_id_arg    = f'$(if $(RMS_ID),--rms-id $(RMS_ID),{_static_rms})'
+            # Publishing is opt-in: rms_id only names the target regression, and
+            # nothing is pushed unless PUSH_RESULTS=1 (eda-buddy --push-results).
+            # RMS_ID overrides which regression receives it.
+            _effective_id = f'$(if $(RMS_ID),$(RMS_ID),{rms_id})' if rms_id else '$(RMS_ID)'
+            rms_id_arg    = (f'$(if $(filter 1,$(PUSH_RESULTS)),'
+                             f'$(if {_effective_id},--rms-id {_effective_id},),)')
             pre_hook_lines = self._hook_lines(f"PRE-{g_name.upper()}", pre_hook)
 
             for tool in ('vcs', 'questa', 'xcelium'):
@@ -541,6 +542,13 @@ class MakefileGenerator:
             "## and build are always serial.",
             "JOBS ?=",
             "PARALLEL_FLAGS := $(if $(JOBS),-j$(JOBS) --output-sync=target,)",
+            "",
+            "## -- Publishing results to the RMS --",
+            "## Opt-in. A group's rms_id only names the regression to push to;",
+            "## PUSH_RESULTS=1 is what actually publishes, so an ordinary local run",
+            "## never writes to the shared dashboard. RMS_ID overrides the target.",
+            "PUSH_RESULTS ?= 0",
+            "RMS_ID ?=",
             "",
         ]
 

@@ -419,7 +419,8 @@ ones from its flags.
 | `QUIET=0\|1` | Log only, no terminal output | `debug.quiet_sim` | `--quiet` / `--no-quiet` |
 | `WAVE_FORMAT=vcd\|wlf` | Waveform format | `debug.wave_format` | `--wave-format` |
 | `VERBOSITY=UVM_HIGH` | UVM verbosity | `runtime.common_args` | `--verbosity` |
-| `RMS_ID=MY_REG` | Push results to this RMS regression | `groups.<name>.rms_id` | `--rms-id` |
+| `PUSH_RESULTS=0\|1` | Publish results to the RMS | off | `--push-results` |
+| `RMS_ID=MY_REG` | RMS regression to publish to | `groups.<name>.rms_id` | `--rms-id` |
 | `JOBS=N` | Run a group's tests N-way parallel | — | `-j N` |
 | `PYTHON=python3` | Interpreter used for reporting and RMS push | — | — |
 
@@ -606,25 +607,37 @@ groups:
     - my_second_test
 ```
 
-That is the whole configuration. EDA Buddy pushes the session's tallies itself,
-in the same process that produced the report — no interpreter path to quote, no
-`{total}` placeholders to template, and nothing that breaks when the package
-moves. The id must match a regression registered in the RMS exactly, or the push
-returns 404.
+4. Publish with `--push-results`:
+
+```bash
+eda-buddy run regression --comp my_vip --push-results
+```
+
+**Publishing is opt-in.** `rms_id` only names the regression to publish *to*;
+nothing is sent unless you ask, so day-to-day local runs never write to a shared
+dashboard. When you do ask, EDA Buddy pushes the session's tallies itself, in the
+same process that produced the report — no interpreter path to quote, no
+`{total}` placeholders, and nothing that breaks when the package moves. The id
+must match a regression registered in the RMS exactly, or the push returns 404.
+
+| Invocation | Publishes? |
+|---|---|
+| `eda-buddy run <g> --comp X` | no |
+| `eda-buddy run <g> --comp X --push-results` | yes, to the group's `rms_id` |
+| `eda-buddy run <g> --comp X --rms-id OTHER` | yes, to `OTHER` — naming one implies publishing |
+| `eda-buddy run <g> --comp X --no-push-results --rms-id OTHER` | no — the explicit refusal wins |
+| `make questa_run_X_<g> PUSH_RESULTS=1` | yes, to the group's `rms_id` |
+| `make questa_run_X_<g> PUSH_RESULTS=1 RMS_ID=OTHER` | yes, to `OTHER` |
+
+On the make line `RMS_ID` alone does *not* publish — `PUSH_RESULTS=1` is what
+decides. The "implies" convenience lives in the CLI only, so the Makefile has a
+single unambiguous switch.
+
+If neither the group nor `RMS_ID` names a regression, `--push-results` has
+nothing to push to and is silently a no-op.
 
 Set `RMS_URL` (or pass `--rms-url` to `run_report`) if the backend is not on
 `http://localhost:8000`.
-
-**Overriding per run.** `rms_id` is only the default. `--rms-id` (or `RMS_ID=` on
-the make line) wins for that run, so a session can be pushed to a different
-regression — or to one at all, when the YAML names none — without editing YAML:
-
-```bash
-eda-buddy run smoke_test --comp my_vip --rms-id MY_VIP_EXPERIMENT
-make questa_run_my_vip_smoke_test RMS_ID=MY_VIP_EXPERIMENT
-```
-
-With no `rms_id` in the YAML and no `--rms-id`, nothing is pushed.
 
 **Custom post-run commands** still use `hooks.post`, which is unchanged and runs
 alongside `rms_id`:
