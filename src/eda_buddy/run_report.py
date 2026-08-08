@@ -456,9 +456,16 @@ def run_report(root, project_name='', component=None, save_to=None,
         total  = passed + failed + timeout
         cmd    = post_cmd.format(total=total, passed=passed, failed=failed + timeout)
         # Convert Windows absolute paths (D:\foo\bar) to Cygwin (/cygdrive/d/foo/bar)
-        # so the command works when shell=True invokes /bin/bash in a Cygwin environment.
-        import shutil
-        if shutil.which('cygpath'):
+        # ONLY when the shell that will run this is a POSIX one.
+        #
+        # The deciding factor is what shell=True below actually launches, which
+        # follows from the interpreter running this file:
+        #   sys.platform == 'cygwin' -> /bin/bash, needs /cygdrive/...
+        #   sys.platform == 'win32'  -> cmd.exe,  needs D:\... and would read
+        #                               /cygdrive/d/x as a path on the current drive
+        # Testing for a cygpath binary instead was wrong: one is on PATH in plenty
+        # of setups where the command still runs under cmd.exe.
+        if sys.platform == 'cygwin':
             cmd = re.sub(
                 r'([A-Za-z]):\\([^\s"\']+)',
                 lambda m: f'/cygdrive/{m.group(1).lower()}/{m.group(2).replace(chr(92), "/")}',
