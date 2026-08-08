@@ -112,6 +112,25 @@ def main():
         print(f"[RMS] Server said: {detail}")
         sys.exit(0)
 
+    elif r.status_code in (401, 403):
+        # This script deliberately sends no X-API-Key header. An RMS with auth
+        # switched on will reject every push, and a bare "Unexpected response
+        # 403" gives no clue why results stopped appearing in the dashboard.
+        detail = (r.json().get('detail', r.text)
+                  if r.headers.get('content-type', '').startswith('application/json')
+                  else r.text)
+        print(f"")
+        print(f"[RMS] WARNING: Result was NOT pushed - rejected by the server ({r.status_code}).")
+        print(f"[RMS] Server : {args.url}")
+        print(f"[RMS] Reason : {detail}")
+        print(f"[RMS] This RMS requires an API key. push_result.py does not send one,")
+        print(f"[RMS] so every push will be rejected until either:")
+        print(f"[RMS]   - authentication is turned off on the RMS backend, or")
+        print(f"[RMS]   - API key support is re-enabled in push_result.py")
+        print(f"[RMS] The regression itself is unaffected.")
+        print(f"")
+        sys.exit(0)
+
     else:
         print(f"[RMS] Unexpected response {r.status_code}: {r.text}")
         sys.exit(0)
