@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eda-buddy"
+version = "0.1.0"
+description = "UVM simulation manager — generates a hierarchical Makefile from component YAMLs and drives build/run/regression flows"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "pyyaml>=6.0",
+    # Only push_result.py imports requests, and it degrades gracefully when the
+    # import fails. Kept a hard dependency so an install matches what
+    # requirements.txt has always provided.
+    "requests>=2.28",
+]
+
+[project.scripts]
+eda-buddy = "eda_buddy.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

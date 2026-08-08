@@ -1,0 +1,15 @@
+## Filelist for comp_a — source root resolved from $COMP_A_SRC_DIR
+## -- dep: dep_vip_build.yaml (__FIXDIR__/dep_vip) --
++incdir+__FIXDIR__/dep_vip/src
++incdir+/abs/dep/include
+__FIXDIR__/dep_vip/src/dep_vip_if.sv
+__FIXDIR__/dep_vip/src/dep_vip_pkg.sv
++incdir+${COMP_A_SRC_DIR}/env
++incdir+${COMP_A_SRC_DIR}/tests
++incdir+/abs/comp_a/include
++define+COMP_A_V1_0
++define+UVM_NO_DEPRECATED
+${COMP_A_SRC_DIR}/top/comp_a_if.sv
+${COMP_A_SRC_DIR}/top/comp_a_pkg.sv
+/abs/vendor/glbl.v
+${COMP_A_SRC_DIR}/top/comp_a_tb_top.sv

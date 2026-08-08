@@ -5,3 +5,10 @@ project_structure.yaml
 __pycache__/
 *.pyc
 *.pyo
+
+# Packaging artifacts
+*.egg-info/
+build/
+dist/
+.venv/
+venv/

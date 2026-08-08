@@ -1,0 +1,29 @@
+# Dependency build manifest — only interfaces+packages are pulled into a dependent
+# component's filelist by makefile_gen._dep_lines(). modules/dut are deliberately
+# ignored, so this fixture declares all four to prove the filtering still happens.
+project:
+  name: dep_vip
+  top_module: dep_vip_tb_top
+  timescale: 1ns/1ps
+
+paths:
+  root_dir: __FIXDIR__/dep_vip
+
+compilation:
+  include_dirs:
+  - src
+  - /abs/dep/include
+  sources:
+    interfaces:
+    - src/dep_vip_if.sv
+    packages:
+    - src/dep_vip_pkg.sv
+    modules:
+    - src/dep_vip_tb_top.sv
+    dut:
+    - src/dep_vip_dut.sv
+
+tool_settings:
+  questa:
+    compile_flags:
+    - -sv
