@@ -22,6 +22,7 @@ You write two small YAML files per component (one for build, one for tests). EDA
 11. [RMS Integration](#11-rms-integration)
 12. [Using on a New Machine (Portability)](#12-using-on-a-new-machine)
 13. [Hooks](#13-hooks)
+14. [Command Reference](#14-command-reference)
 
 ---
 
@@ -29,14 +30,23 @@ You write two small YAML files per component (one for build, one for tests). EDA
 
 ```
 eda_buddy/
-├── eda_buddy.py               ← entry point
+├── pyproject.toml             ← installable package; provides the `eda-buddy` command
 ├── project_structure.yaml     ← lists all components and paths
+├── eda_buddy.py               ← deprecated shim, forwards to eda_buddy.cli
 ├── README.md
-└── scripts/
-    ├── makefile_gen.py        ← Makefile generator
-    ├── run_report.py          ← test result reporter
-    ├── push_result.py         ← RMS result pusher
-    └── logger.py
+├── src/eda_buddy/
+│   ├── cli.py                 ← command line interface
+│   ├── config.py              ← project_structure.yaml loader
+│   ├── runner.py              ← resolves targets and drives make
+│   ├── toolchain.py           ← locates make; picks the simulator
+│   ├── makefile_gen.py        ← Makefile generator
+│   ├── run_report.py          ← test result reporter
+│   ├── push_result.py         ← RMS result pusher
+│   └── logger.py
+├── scripts/                   ← deprecated shims kept so existing YAML hooks
+│   ├── run_report.py            that hardcode these paths keep working
+│   └── push_result.py
+└── tests/                     ← golden-file and resolution tests
 
 <your-TB-output>/
 └── yamls/
@@ -72,14 +82,29 @@ fd = $fopen({run_dir, "/", get_full_name(), ".tracker.log"}, "w");
 
 ## 2. Quick Start
 
-### Step 1 — Install Python dependencies
+### Step 1 — Install EDA Buddy
 ```bash
-pip install pyyaml requests
+git clone https://github.com/Mohsannaeem/eda_buddy.git
+cd eda_buddy
+pip install -e .
 ```
+
+This pulls in `pyyaml` and `requests` and puts an `eda-buddy` command on your
+PATH, so you can drive the project from any directory. Use `-e` (editable) if
+you expect to pull updates — a plain `pip install .` works too.
+
+> **Upgrading from a pre-package checkout?** `python eda_buddy.py --gen-makefile`
+> still works and still generates the same Makefile; it just prints a
+> deprecation notice. Nothing needs to change until you are ready.
 
 ### Step 2 — Create `project_structure.yaml`
 
-Copy the template below into `eda_buddy/project_structure.yaml` and fill in your paths:
+Put this file wherever your project lives — it does not belong inside the
+EDA Buddy checkout. Point at it with `--project-cfg` or `$EDA_BUDDY_PROJECT_CFG`.
+
+**Paths in it are resolved relative to the file itself**, not to your current
+directory, so a project file using relative paths works from anywhere and
+survives being cloned to another machine. Absolute paths still work unchanged.
 
 ```yaml
 project_name: MY_PROJECT
@@ -103,21 +128,34 @@ components:
 
 ### Step 4 — Generate the Makefile
 ```bash
-cd eda_buddy/
-python eda_buddy.py --gen-makefile
+eda-buddy gen
 ```
 
 ### Step 5 — Compile and run
-```bash
-cd run/
 
+Either drive everything through `eda-buddy`, from anywhere:
+
+```bash
 # Compile
-make questa_build_my_vip
+eda-buddy build --comp my_vip
 
 # Run a single test
-make questa_run_my_vip_my_first_test
+eda-buddy run my_first_test --comp my_vip
 
 # Run a regression group
+eda-buddy run smoke_test --comp my_vip
+
+# Generate, compile and run in one go
+eda-buddy all smoke_test --comp my_vip
+```
+
+…or call the generated Makefile directly, exactly as before. The target names
+have not changed, and `eda-buddy` is only resolving these names for you:
+
+```bash
+cd run/
+make questa_build_my_vip
+make questa_run_my_vip_my_first_test
 make questa_run_my_vip_smoke_test
 ```
 
@@ -134,6 +172,12 @@ paths:
   root:      /path/to/run         # ALL generated artifacts go here
   filelists: filelists            # subfolder for .f files (relative to root)
   makefile:  .                    # subfolder for Makefile (. = root itself)
+
+# OPTIONAL. Saves typing --make/--tool on every command. Omit the whole block
+# and EDA Buddy behaves exactly as it always has.
+tools:
+  make:      /usr/bin/make        # or C:/cygwin64/bin/make.exe on Windows
+  simulator: questa               # questa | vcs | xcelium
 
 # Global hooks run before/after EVERY build and simulation across all components.
 # Leave blank ("") to skip.
@@ -155,6 +199,8 @@ components:
 |---|---|
 | `project_name` | Display name used in final reports |
 | `paths.root` | Root output directory — Makefile, filelists, and logs all go here |
+| `tools.make` | *Optional.* Path to `make`. Needed when make is not on PATH |
+| `tools.simulator` | *Optional.* Default simulator, so `--tool` can be omitted |
 | `hooks.pre/post` | Shell command run before/after every build AND every simulation |
 | `components[].name` | Short identifier used as Makefile target prefix |
 | `components[].build_cfg` | Absolute path to the component's build YAML |
@@ -288,13 +334,13 @@ hooks:
 # with {total}, {passed}, {failed} substituted with actual results.
 groups:
   smoke_test:
-    regression_post_hook: "python /path/to/eda_buddy/scripts/push_result.py --id MY_VIP_SMOKE --total {total} --passed {passed} --failed {failed}"
+    regression_post_hook: "python -m eda_buddy.push_result --id MY_VIP_SMOKE --total {total} --passed {passed} --failed {failed}"
     tests:
     - my_first_test
     - my_second_test
 
   regression:
-    regression_post_hook: "python /path/to/eda_buddy/scripts/push_result.py --id MY_VIP_FULL_REG --total {total} --passed {passed} --failed {failed}"
+    regression_post_hook: "python -m eda_buddy.push_result --id MY_VIP_FULL_REG --total {total} --passed {passed} --failed {failed}"
     tests:
     - my_first_test
     - my_second_test
@@ -308,11 +354,15 @@ groups:
 | `runtime.common_args` | UVM plusargs passed to every test |
 | `runtime.common_args: +UVM_VERBOSITY=` | Default verbosity for this component. Lifted into a `<COMP>_VERBOSITY` Make variable; override per run with `make ... VERBOSITY=UVM_FULL`. Defaults to `UVM_MEDIUM` if unset |
 | `runtime.tool_args.<tool>` | Simulator-specific flags (batch mode, log, etc.) |
-| `debug.quiet_sim` | `true` = send sim output only to log file, not terminal |
-| `debug.dump_waves` | Enable waveform dumping (use `WAVES=1` on make command) |
+| `debug.quiet_sim` | `true` = send sim output only to log file, not terminal. Override per run with `QUIET=` / `--quiet` / `--no-quiet` |
+| `debug.dump_waves` | `true` = dump waves by default. Override per run with `WAVES=` / `--waves` / `--no-waves` |
+| `debug.gui_mode` | `true` = launch the simulator interactively by default. Override with `GUI=` / `--gui` / `--no-gui` |
+| `debug.wave_format` | `vcd` or `wlf`. Override with `WAVE_FORMAT=` / `--wave-format`. `fsdb` is rejected — see section 6 |
 | `test_config.entry_points` | List of all tests. Each has a name, seed, and optional user args |
 | `groups.<name>.tests` | Subset of entry_points to run as a group |
-| `groups.<name>.regression_post_hook` | Shell command executed after the group finishes |
+| `groups.<name>.rms_id` | RMS regression id. Results are pushed automatically after the group finishes — see section 11 |
+| `groups.<name>.hooks.pre/post` | Shell commands run before/after the group. `{total}`/`{passed}`/`{failed}` are substituted in `post` |
+| `groups.<name>.regression_post_hook` | Legacy alias for `hooks.post` |
 
 ### UVM_TIMEOUT value
 
@@ -328,7 +378,7 @@ With `timescale 1ns/1ps`, UVM works in picoseconds internally:
 
 ## 6. Generated Makefile Targets
 
-After running `python eda_buddy.py --gen-makefile`, the Makefile at `run/Makefile` contains:
+After running `eda-buddy gen`, the Makefile at `run/Makefile` contains:
 
 ### Build targets
 ```
@@ -357,11 +407,63 @@ report       # print pass/fail summary across all components
 clean        # remove build/, work/, run/ directories (keeps filelists and Makefile)
 ```
 
+### Variables
+
+Every target accepts these on the make command line; `eda-buddy` sets the same
+ones from its flags.
+
+| Variable | Effect | Default from | `eda-buddy` flag |
+|---|---|---|---|
+| `WAVES=0\|1` | Dump waves into `$RUN_DIR` | `debug.dump_waves` | `--waves` / `--no-waves` |
+| `GUI=0\|1` | Launch the simulator interactively | `debug.gui_mode` | `--gui` / `--no-gui` |
+| `QUIET=0\|1` | Log only, no terminal output | `debug.quiet_sim` | `--quiet` / `--no-quiet` |
+| `WAVE_FORMAT=vcd\|wlf` | Waveform format | `debug.wave_format` | `--wave-format` |
+| `VERBOSITY=UVM_HIGH` | UVM verbosity | `runtime.common_args` | `--verbosity` |
+| `PUSH_RESULTS=0\|1` | Publish results to the RMS | off | `--push-results` |
+| `RMS_ID=MY_REG` | RMS regression to publish to | `groups.<name>.rms_id` | `--rms-id` |
+| `JOBS=N` | Run a group's tests N-way parallel | — | `-j N` |
+| `PYTHON=python3` | Interpreter used for reporting and RMS push | — | — |
+
+Each of these has a per-component default emitted from the run YAML, e.g.
+`MY_VIP_WAVES ?= 1`, and the command-line value wins for that one run. Omitting
+a flag is not the same as switching it off — it leaves the YAML default in
+force, which is why `--no-waves`/`--no-gui`/`--no-quiet` exist.
+
+**Waveform formats.** `vcd` is portable and works with Questa and VCS. `wlf` is
+Questa's native database — it uses `-wlf` plus `log -r /*` rather than a VCD
+dump, and needs no extra libraries. `fsdb` is rejected at generation time: it
+requires the Verdi/Novas PLI, which EDA Buddy does not configure, so emitting it
+would produce a command that fails at run time. If you need FSDB, add the `-pli`
+flags to `runtime.tool_args` yourself. Xcelium has no wave support here.
+
 ---
 
 ## 7. Running Tests
 
-All commands are run from inside the `run/` directory.
+There are two equivalent ways to run anything. `eda-buddy` works from any
+directory and resolves the target name for you; `make` is the same thing with
+the name spelled out, run from inside `run/`.
+
+```bash
+# ── eda-buddy ─────────────────────────────────────────────────
+eda-buddy build --comp my_vip
+eda-buddy run   my_first_test --comp my_vip
+eda-buddy run   my_first_test --comp my_vip --waves
+eda-buddy run   my_first_test --comp my_vip --gui
+eda-buddy run   my_first_test --comp my_vip --verbosity UVM_FULL
+eda-buddy run   smoke_test    --comp my_vip -j 4      # 4 tests at a time
+eda-buddy all   smoke_test    --comp my_vip           # gen -> build -> run
+eda-buddy clean
+
+# Not sure what a command will do? Print it instead of running it:
+eda-buddy run smoke_test --comp my_vip -j 4 --dry-run
+```
+
+`--comp` may be omitted when the project declares a single component, and
+`--tool` when the component declares a single toolchain or `tools.simulator` is
+set. EDA Buddy never guesses between two simulators — it errors and lists them.
+
+The equivalent make invocations:
 
 ```bash
 cd run/
@@ -385,6 +487,11 @@ make questa_run_my_vip_my_first_test GUI=1
 # Default comes from runtime.common_args (+UVM_VERBOSITY=...) in the run YAML.
 # VERBOSITY on the command line overrides it for this run only.
 make questa_run_my_vip_my_first_test VERBOSITY=UVM_FULL
+
+# ── Run a group's tests in parallel ───────────────────────────
+# Serial by default. Only the tests inside the group run concurrently —
+# compilation is never parallelized.
+make questa_run_my_vip_smoke_test JOBS=4
 
 # ── Clean everything ──────────────────────────────────────────
 make clean
@@ -468,7 +575,7 @@ runtime:
 
 Then regenerate:
 ```bash
-python eda_buddy.py --gen-makefile
+eda-buddy gen
 ```
 
 With `quiet_sim: true` the terminal shows only:
@@ -489,18 +596,64 @@ EDA Buddy can automatically push regression results to an RMS (Result Management
 ### Setup
 1. Start the RMS server: `cd <path-to-RMS> && python backend/main.py`
 2. Open the RMS GUI and create a regression with the ID you want to use
-3. Add a `regression_post_hook` to your group in the runtime YAML:
+3. Add `rms_id` to your group in the runtime YAML:
 
 ```yaml
 groups:
   regression:
-    regression_post_hook: "python /path/to/eda_buddy/scripts/push_result.py --id MY_VIP_REGRESSION --total {total} --passed {passed} --failed {failed}"
+    rms_id: MY_VIP_REGRESSION      # must already exist in the RMS GUI
     tests:
     - my_first_test
     - my_second_test
 ```
 
-The `{total}`, `{passed}`, and `{failed}` placeholders are automatically substituted with the actual results from that regression session.
+4. Publish with `--push-results`:
+
+```bash
+eda-buddy run regression --comp my_vip --push-results
+```
+
+**Publishing is opt-in.** `rms_id` only names the regression to publish *to*;
+nothing is sent unless you ask, so day-to-day local runs never write to a shared
+dashboard. When you do ask, EDA Buddy pushes the session's tallies itself, in the
+same process that produced the report — no interpreter path to quote, no
+`{total}` placeholders, and nothing that breaks when the package moves. The id
+must match a regression registered in the RMS exactly, or the push returns 404.
+
+| Invocation | Publishes? |
+|---|---|
+| `eda-buddy run <g> --comp X` | no |
+| `eda-buddy run <g> --comp X --push-results` | yes, to the group's `rms_id` |
+| `eda-buddy run <g> --comp X --rms-id OTHER` | yes, to `OTHER` — naming one implies publishing |
+| `eda-buddy run <g> --comp X --no-push-results --rms-id OTHER` | no — the explicit refusal wins |
+| `make questa_run_X_<g> PUSH_RESULTS=1` | yes, to the group's `rms_id` |
+| `make questa_run_X_<g> PUSH_RESULTS=1 RMS_ID=OTHER` | yes, to `OTHER` |
+
+On the make line `RMS_ID` alone does *not* publish — `PUSH_RESULTS=1` is what
+decides. The "implies" convenience lives in the CLI only, so the Makefile has a
+single unambiguous switch.
+
+If neither the group nor `RMS_ID` names a regression, `--push-results` has
+nothing to push to and is silently a no-op.
+
+Set `RMS_URL` (or pass `--rms-url` to `run_report`) if the backend is not on
+`http://localhost:8000`.
+
+**Custom post-run commands** still use `hooks.post`, which is unchanged and runs
+alongside `rms_id`:
+
+```yaml
+groups:
+  regression:
+    rms_id: MY_VIP_REGRESSION
+    hooks:
+      post: "curl -X POST $SLACK_WEBHOOK -d '{\"text\":\"{passed}/{total} passed\"}'"
+```
+
+The older form — a `hooks.post` or `regression_post_hook` that invokes
+`push_result` by hand — keeps working. Prefer `rms_id`: a hand-written hook has
+to name an interpreter, and the one the shell picks is not always the one that
+can import `eda_buddy`.
 
 ### Graceful failure
 If the RMS server is not running, the script prints a warning and exits cleanly — the regression flow is **not** interrupted:
@@ -517,7 +670,7 @@ If the RMS server is not running, the script prints a warning and exits cleanly 
 ### push_result.py options
 
 ```
-python push_result.py --id MY_REGRESSION --total 46 --passed 44 --failed 2
+python -m eda_buddy.push_result --id MY_REGRESSION --total 46 --passed 44 --failed 2
 
 Options:
   --id      Regression ID (must exist in the RMS GUI)
@@ -541,7 +694,7 @@ The generated Makefile is fully portable. All paths are Make variables at the to
 **Option A — Re-generate (recommended)**
 Clone the repo, update `project_structure.yaml` with your machine's paths, then:
 ```bash
-python eda_buddy.py --gen-makefile
+eda-buddy gen
 ```
 
 **Option B — Edit the Makefile directly**
@@ -555,6 +708,22 @@ MY_VIP_SRC_DIR          := /new/machine/path/tb/my_vip_tb
 ```
 
 Everything else — build dirs, work dirs, filelists, run dirs — derives from these two variables. The filelists use `${MY_VIP_SRC_DIR}` which is exported as an environment variable so EDA tools expand it at compile time.
+
+> **If you take Option B, know that `build`/`run` will regenerate over it.**
+> `eda-buddy build` and `eda-buddy run` regenerate the Makefile whenever a
+> project YAML is newer than it. Your edits are not lost silently: the
+> generator stamps a checksum into the header, so a modified file is detected,
+> copied to `run/Makefile.bak`, and reported before it is replaced:
+>
+> ```
+> WARNING: Makefile was modified since EDA Buddy generated it.
+> WARNING: Your version has been saved to: /path/to/run/Makefile.bak
+> WARNING: Re-apply any manual edits, or move them into the YAMLs.
+> ```
+>
+> Option A is the durable fix — anything you would edit by hand has a YAML
+> equivalent that survives regeneration. `eda-buddy gen` always overwrites
+> without a backup, exactly as `--gen-makefile` always has.
 
 ---
 
@@ -594,7 +763,7 @@ groups:
 
 ## Complete Minimal Example
 
-**File: `eda_buddy/project_structure.yaml`**
+**File: `my_project/project_structure.yaml`**
 ```yaml
 project_name: MY_PROJECT
 paths:
@@ -664,7 +833,7 @@ groups:
     tests:
     - my_first_test
   regression:
-    regression_post_hook: "python /home/user/my_project/eda_buddy/scripts/push_result.py --id MY_VIP_REG --total {total} --passed {passed} --failed {failed}"
+    regression_post_hook: "python -m eda_buddy.push_result --id MY_VIP_REG --total {total} --passed {passed} --failed {failed}"
     tests:
     - my_first_test
     - my_second_test
@@ -673,11 +842,80 @@ groups:
 
 **Generate and run:**
 ```bash
-cd eda_buddy/
-python eda_buddy.py --gen-makefile
-
-cd ../run/
-make questa_build_my_vip
-make questa_run_my_vip_smoke_test
-make questa_run_my_vip_regression
+eda-buddy all smoke_test --comp my_vip     # gen -> build -> run
+eda-buddy run regression --comp my_vip
 ```
+
+---
+
+## 14. Command Reference
+
+```
+eda-buddy gen                            Generate the Makefile and filelists
+eda-buddy build  --comp X                Compile and elaborate
+eda-buddy run    <test|group> --comp X   Simulate
+eda-buddy all    [target]     --comp X   gen -> build -> run, stopping on failure
+eda-buddy report                         Pass/fail summary across all components
+eda-buddy clean                          Remove build/, work/, run/
+```
+
+**Options**
+
+| Option | Applies to | Description |
+|---|---|---|
+| `--project-cfg PATH` | all | Project YAML (default `project_structure.yaml`) |
+| `--comp NAME` | build, run, all | Component. Optional when the project has one |
+| `--tool NAME` | build, run, all | `questa` \| `vcs` \| `xcelium` |
+| `--make PATH` | all but `gen` | make executable |
+| `--dry-run` | all | Print the make command instead of running it |
+| `--waves` | run, all | `WAVES=1` |
+| `--gui` | run, all | `GUI=1` |
+| `--verbosity V` | run, all | `VERBOSITY=V` |
+| `-j N`, `--jobs N` | run, all | `JOBS=N` — parallel tests within a group |
+
+**Environment variables**
+
+| Variable | Effect |
+|---|---|
+| `EDA_BUDDY_PROJECT_CFG` | Default for `--project-cfg`, so commands work from any directory |
+| `EDA_BUDDY_MAKE` | Fallback make executable |
+
+Set these once per shell from an environment script rather than repeating flags.
+On Windows they must hold Windows-form paths (`D:/...`), not Cygwin-form
+(`/d/...`) — `eda-buddy` runs on native Python, which cannot open the latter.
+
+If the interpreter's Scripts directory is not on PATH, `python -m eda_buddy`
+is equivalent to the `eda-buddy` command in every respect.
+
+**How `make` is located**, first hit wins:
+`--make` → `tools.make` → `$EDA_BUDDY_MAKE` → `make` on PATH.
+
+**How the simulator is chosen**, first hit wins:
+`--tool` → `tools.simulator` → the component's sole `tool_settings` entry.
+Two or more declared toolchains with no default is an error, not a guess.
+
+### What is and is not parallel
+
+`-j`/`JOBS` applies to one thing only: the tests inside a regression group.
+
+```
+eda-buddy all regression --comp my_vip -j 4
+
+  [1/2] Build   questa_build_my_vip           serial, always
+  [2/2] Run     questa_run_my_vip_regression  JOBS=4 -> 4 tests at a time
+```
+
+Generation and compilation are never parallelized, and `-j` is passed as the
+`JOBS` variable rather than as make's `-j` flag, so it cannot leak into the
+build through `MAKEFLAGS`. Check your simulator licence seats before raising it.
+
+### Running the tests
+
+```bash
+python tests/test_makefile_golden.py    # generated output is unchanged
+python tests/test_checksum.py           # hand-edit detection
+python tests/test_resolution.py         # component/tool/target resolution
+```
+
+`test_makefile_golden.py --update` re-records the expected Makefile. Only run it
+when you intended to change generated output, and review the diff.

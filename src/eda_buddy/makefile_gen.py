@@ -1,11 +1,59 @@
+import hashlib
 import os
+import sys
 
-_SCRIPTS_DIR   = os.path.dirname(os.path.abspath(__file__)).replace('\\', '/')
-_REPORT_SCRIPT = f"{_SCRIPTS_DIR}/run_report.py"
-_PUSH_SCRIPT   = f"{_SCRIPTS_DIR}/push_result.py"
+_CHECKSUM_PREFIX = "## eda-buddy-checksum: sha256:"
+
+
+def _python_exe():
+    """The running interpreter, in a form the Makefile can quote.
+
+    Forward slashes because Cygwin's bash cannot execute a backslash path, and
+    cygpath in the Makefile converts this to /cygdrive/... at parse time.
+    """
+    return (sys.executable or "python").replace("\\", "/")
+
+
+def strip_checksum(text):
+    """Return `text` without its checksum line."""
+    return "\n".join(l for l in text.split("\n") if not l.startswith(_CHECKSUM_PREFIX))
+
+
+def compute_checksum(text):
+    """Checksum of a Makefile's content, ignoring the checksum line itself."""
+    return hashlib.sha256(strip_checksum(text).encode("utf-8")).hexdigest()
+
+
+def read_checksum(text):
+    """The checksum a Makefile claims, or None if it carries no stamp."""
+    for line in text.split("\n"):
+        if line.startswith(_CHECKSUM_PREFIX):
+            return line[len(_CHECKSUM_PREFIX):].strip()
+    return None
+
+
+def is_pristine(path):
+    """True when `path` is exactly as EDA Buddy generated it.
+
+    False for a hand-edited file *and* for one generated before checksums
+    existed — in both cases the content's provenance is unknown, so a caller
+    about to overwrite it should preserve a copy first.
+    """
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return False
+    claimed = read_checksum(text)
+    return claimed is not None and claimed == compute_checksum(text)
 
 
 class MakefileGenerator:
+    # Formats EDA Buddy can emit working dump commands for. FSDB is deliberately
+    # absent: it needs the Verdi/Novas PLI, which is not configured here, so
+    # emitting it would produce a command that fails at runtime.
+    WAVE_FORMATS = ("vcd", "wlf")
+
     def __init__(self, component_configs, logger,
                  root="run", flist_subdir="filelists", makefile_subdir=".",
                  global_hooks=None, project_name=''):
@@ -282,10 +330,52 @@ class MakefileGenerator:
             _questa_filtered.append(str(_a))
         questa_args = " ".join(_questa_filtered)
 
-        quiet_sim = run_cfg['runtime'].get('debug', {}).get('quiet_sim', False)
-        # quiet_sim=true  → redirect only to log, no terminal noise
-        # quiet_sim=false → tee to terminal AND log (default)
-        _redirect = "> $$LOGFILE 2>&1" if quiet_sim else "2>&1 | tee $$LOGFILE"
+        # runtime.debug supplies the per-component defaults. Each becomes a Make
+        # variable so a single run can override it without editing the YAML, the
+        # same way VERBOSITY works:
+        #   make questa_run_<comp>_<test> WAVES=1 GUI=1 QUIET=0 WAVE_FORMAT=wlf
+        debug = run_cfg['runtime'].get('debug', {}) or {}
+
+        def _flag(key, default=False):
+            return "1" if debug.get(key, default) else "0"
+
+        wave_format = str(debug.get('wave_format', 'vcd')).lower()
+        if wave_format not in self.WAVE_FORMATS:
+            raise ValueError(
+                "component '{}': wave_format '{}' is not supported. Use one of: {}.\n"
+                "  vcd  — portable, works with Questa and VCS\n"
+                "  wlf  — Questa's native format, no extra libraries\n"
+                "FSDB needs the Verdi/Novas PLI, which EDA Buddy does not configure; "
+                "if you need it, add the -pli flags to runtime.tool_args yourself."
+                .format(name, wave_format, ", ".join(sorted(self.WAVE_FORMATS)))
+            )
+
+        content += [
+            "## -- Runtime debug defaults (from run.yaml; override on the make line) --",
+            f"{MV}_WAVES       ?= {_flag('dump_waves')}",
+            f"{MV}_GUI         ?= {_flag('gui_mode')}",
+            f"{MV}_QUIET       ?= {_flag('quiet_sim')}",
+            f"{MV}_WAVE_FORMAT ?= {wave_format}",
+            "",
+        ]
+
+        # A bare WAVES=/GUI=/QUIET= on the command line wins over the component default.
+        waves_eff  = f"$(if $(WAVES),$(WAVES),$({MV}_WAVES))"
+        gui_eff    = f"$(if $(GUI),$(GUI),$({MV}_GUI))"
+        quiet_eff  = f"$(if $(QUIET),$(QUIET),$({MV}_QUIET))"
+        format_eff = f"$(if $(WAVE_FORMAT),$(WAVE_FORMAT),$({MV}_WAVE_FORMAT))"
+
+        # quiet=1 → redirect only to the log, no terminal noise
+        # quiet=0 → tee to terminal AND log (default)
+        # Resolved by make rather than by the shell, because a pipeline cannot be
+        # applied conditionally inline without repeating the whole command.
+        content += [
+            # $$LOGFILE, not $$$$: a recursive variable's value is expanded once
+            # when used, exactly like inline recipe text, so $$ -> $ for the shell.
+            f"{MV}_REDIRECT = $(if $(filter 1,{quiet_eff}),> $$LOGFILE 2>&1,2>&1 | tee $$LOGFILE)",
+            "",
+        ]
+        _redirect = f"$({MV}_REDIRECT)"
 
         total_tests = len(run_cfg['test_config']['entry_points'])
 
@@ -299,20 +389,20 @@ class MakefileGenerator:
             # TOTAL is set by the group target to its own test count (e.g. 7 for smoke_test,
             # 35 for regression). Falls back to all entry_points when run standalone.
             # If run_report.py is missing, print a bold warning and skip — sim result is unaffected.
-            _report_cmd = (f"python $(REPORT_SCRIPT) --single-log $$LOGFILE --test-name {t_name} "
+            _report_cmd = (f"$(REPORT_CMD) --single-log $$LOGFILE --test-name {t_name} "
                            f"--total $(if $(TOTAL),$(TOTAL),{total_tests}) "
                            f"$(if $(REGDIR),--comp-run-dir $(REGDIR),)")
-            _skip_msg   = r"printf '\033[1m[EDA Buddy] Per-test report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'"
+            _skip_msg   = r"printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'"
             _sl = (f"SIM_RC=$$?; "
-                   f"if [ -f \"$(REPORT_SCRIPT)\" ]; then {_report_cmd}; else {_skip_msg}; fi; "
+                   f"if [ -n \"$(REPORT_OK)\" ]; then {_report_cmd}; else {_skip_msg}; fi; "
                    f"exit $$SIM_RC")
 
             # VCS
             content += [f"vcs_run_{name}_{t_name}:"] + run_pre_lines + [
                 f"\t@{snippet}; \\",
                 f"\t echo \"[VCS] Running {t_name}\"; \\",
-                f"\t VCD_ARGS=\"\"; if [ \"$(WAVES)\" = \"1\" ]; then VCD_ARGS=\"+vcs+dumpvars+$$RUN_DIR/waves.vcd\"; fi; \\",
-                f"\t GUI_FLAG=\"\"; if [ \"$(GUI)\" = \"1\" ]; then GUI_FLAG=\"-gui\"; fi; \\",
+                f"\t VCD_ARGS=\"\"; if [ \"{waves_eff}\" = \"1\" ]; then VCD_ARGS=\"+vcs+dumpvars+$$RUN_DIR/waves.vcd\"; fi; \\",
+                f"\t GUI_FLAG=\"\"; if [ \"{gui_eff}\" = \"1\" ]; then GUI_FLAG=\"-gui\"; fi; \\",
                 f"\t {build_dir}/simv $$GUI_FLAG $$VCD_ARGS +UVM_TESTNAME={t_name} +ntb_random_seed={t_seed} {verbosity_arg} {run_dir_arg} {common_run_args} {vcs_args} {t_args} {_redirect}; {_sl}",
             ] + run_post_lines + [""]
 
@@ -320,11 +410,19 @@ class MakefileGenerator:
             content += [f"questa_run_{name}_{t_name}:"] + run_pre_lines + [
                 f"\t@{snippet}; \\",
                 f"\t echo \"[QUESTA] Running {t_name}\"; \\",
-                f"\t DO_CMD=\"run -all; quit\"; \\",
-                f"\t if [ \"$(WAVES)\" = \"1\" ]; then DO_CMD=\"vcd file $$RUN_DIR/waves.vcd; vcd add -r /*; run -all; quit\"; fi; \\",
-                f"\t if [ \"$(GUI)\" = \"1\" ]; then DO_CMD=\"add wave -r /*; run -all\"; fi; \\",
-                f"\t MODE=\"-batch\"; if [ \"$(GUI)\" = \"1\" ]; then MODE=\"-gui\"; fi; \\",
-                f"\t vsim $$MODE -do \"$$DO_CMD\" {questa_args} -lib {work_lib} db_opt +UVM_TESTNAME={t_name} -sv_seed {t_seed} {verbosity_arg} {run_dir_arg} {common_run_args} {t_args} {_redirect}; {_sl}",
+                f"\t DO_CMD=\"run -all; quit\"; WLF_ARGS=\"\"; \\",
+                # WLF is Questa's native database: it needs -wlf for the destination
+                # and `log -r /*` to actually record signals, not a vcd-style dump.
+                f"\t if [ \"{waves_eff}\" = \"1\" ]; then \\",
+                f"\t   if [ \"{format_eff}\" = \"wlf\" ]; then \\",
+                f"\t     WLF_ARGS=\"-wlf $$RUN_DIR/waves.wlf\"; DO_CMD=\"log -r /*; run -all; quit\"; \\",
+                f"\t   else \\",
+                f"\t     DO_CMD=\"vcd file $$RUN_DIR/waves.vcd; vcd add -r /*; run -all; quit\"; \\",
+                f"\t   fi; \\",
+                f"\t fi; \\",
+                f"\t if [ \"{gui_eff}\" = \"1\" ]; then DO_CMD=\"add wave -r /*; run -all\"; fi; \\",
+                f"\t MODE=\"-batch\"; if [ \"{gui_eff}\" = \"1\" ]; then MODE=\"-gui\"; fi; \\",
+                f"\t vsim $$MODE $$WLF_ARGS -do \"$$DO_CMD\" {questa_args} -lib {work_lib} db_opt +UVM_TESTNAME={t_name} -sv_seed {t_seed} {verbosity_arg} {run_dir_arg} {common_run_args} {t_args} {_redirect}; {_sl}",
             ] + run_post_lines + [""]
 
             # Xcelium
@@ -347,17 +445,27 @@ class MakefileGenerator:
                 tests      = g_val
                 pre_hook   = ''
                 post_hook  = ''
+                rms_id     = ''
             else:
                 tests     = g_val.get('tests', [])
                 grp_hooks = g_val.get('hooks', {}) or {}
                 pre_hook  = (grp_hooks.get('pre') or '').strip()
                 # hooks.post takes precedence; fall back to legacy regression_post_hook key
                 post_hook = (grp_hooks.get('post') or g_val.get('regression_post_hook') or '').strip()
+                # rms_id replaces hand-written push_result hooks: no interpreter
+                # path, no shell quoting, no {total}/{passed}/{failed} templating.
+                rms_id    = str(g_val.get('rms_id') or '').strip()
 
             if not tests:
                 continue
 
             post_cmd_arg  = f'--post-cmd "{post_hook}"' if post_hook else ''
+            # Publishing is opt-in: rms_id only names the target regression, and
+            # nothing is pushed unless PUSH_RESULTS=1 (eda-buddy --push-results).
+            # RMS_ID overrides which regression receives it.
+            _effective_id = f'$(if $(RMS_ID),$(RMS_ID),{rms_id})' if rms_id else '$(RMS_ID)'
+            rms_id_arg    = (f'$(if $(filter 1,$(PUSH_RESULTS)),'
+                             f'$(if {_effective_id},--rms-id {_effective_id},),)')
             pre_hook_lines = self._hook_lines(f"PRE-{g_name.upper()}", pre_hook)
 
             for tool in ('vcs', 'questa', 'xcelium'):
@@ -367,7 +475,7 @@ class MakefileGenerator:
                 # $(MAKE) -k keeps going on failures; || true lets the chain continue.
                 report_args = (f'--root $(ROOT) --component {name} {proj_name_arg} '
                                f'--tests {tests_csv} --reg-dir $$REGDIR --save-to $$REGDIR/report.txt '
-                               f'{post_cmd_arg}')
+                               f'{post_cmd_arg} {rms_id_arg}')
                 content += [
                     f".PHONY: {tool}_run_{name}_{g_name}",
                     f"{tool}_run_{name}_{g_name}:",
@@ -375,10 +483,10 @@ class MakefileGenerator:
                     f"\t@REGDIR=\"{self._comp_run(name)}/{g_name}_$$(date +%Y%m%d_%H%M%S)\"; \\",
                     f"\tmkdir -p \"$$REGDIR\"; \\",
                     f"\techo \"[{g_name.upper()}] Session dir: $$REGDIR  Total={len(tests)} tests\"; \\",
-                    f"\t$(MAKE) -k REGDIR=$$REGDIR TOTAL={len(tests)} {test_targets} || true; \\",
+                    f"\t$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL={len(tests)} {test_targets} || true; \\",
                     f"\techo \"\"; \\",
-                    f"\tif [ -f \"$(REPORT_SCRIPT)\" ]; then python $(REPORT_SCRIPT) {report_args}; "
-                    r"else printf '\033[1m[EDA Buddy] Final report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi",
+                    f"\tif [ -n \"$(REPORT_OK)\" ]; then $(REPORT_CMD) {report_args}; "
+                    r"else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi",
                     "",
                 ]
 
@@ -406,12 +514,41 @@ class MakefileGenerator:
             f"ROOT      := {root_posix}",
             f"FLIST_DIR := $(ROOT)/filelists",
             "",
-            # cygpath converts D:/... to /cygdrive/d/... for Cygwin bash; fallback keeps original
-            f"REPORT_SCRIPT := $(shell cygpath -u \"{_REPORT_SCRIPT}\" 2>/dev/null || echo \"{_REPORT_SCRIPT}\")",
-            f"PUSH_SCRIPT   := $(shell cygpath -u \"{_PUSH_SCRIPT}\"   2>/dev/null || echo \"{_PUSH_SCRIPT}\")",
+            "## -- EDA Buddy's own entry points --",
+            "## Invoked as modules rather than file paths: an installed package moves",
+            "## between venvs and site-packages, and a baked-in absolute path goes stale",
+            "## the first time it does. This form keeps working across reinstalls.",
             "",
-            "## NOTE: If REPORT_SCRIPT or PUSH_SCRIPT are missing, reporting/RMS steps",
-            "## are silently skipped with a bold warning — builds and simulations continue.",
+            "## Pinned to the interpreter that generated this file. A bare `python`",
+            "## resolves to Cygwin's own /usr/bin/python under Cygwin make — a separate",
+            "## installation, without eda_buddy — which silently disables all reporting.",
+            "## Written in mixed form (C:/...): Cygwin executes that directly, whereas a",
+            "## backslash path fails, and cygpath is not usable here because the one",
+            "## first on PATH may be MSYS's, which emits /c/... that Cygwin cannot resolve.",
+            f"PYTHON     ?= {_python_exe()}",
+            "REPORT_CMD := $(PYTHON) -m eda_buddy.run_report",
+            "PUSH_CMD   := $(PYTHON) -m eda_buddy.push_result",
+            "",
+            "## Probe once at parse time: empty when EDA Buddy is not importable.",
+            "REPORT_OK  := $(shell $(PYTHON) -c \"import eda_buddy.run_report\" 2>/dev/null && echo 1)",
+            "",
+            "## NOTE: If EDA Buddy is not importable, reporting/RMS steps are silently",
+            "## skipped with a bold warning — builds and simulations continue.",
+            "",
+            "## -- Parallel test execution within a regression group --",
+            "## Serial by default. `make <group target> JOBS=4` runs that group's tests",
+            "## concurrently; --output-sync keeps each test's output as one block instead",
+            "## of interleaving. Only the group's inner sub-make is affected — generation",
+            "## and build are always serial.",
+            "JOBS ?=",
+            "PARALLEL_FLAGS := $(if $(JOBS),-j$(JOBS) --output-sync=target,)",
+            "",
+            "## -- Publishing results to the RMS --",
+            "## Opt-in. A group's rms_id only names the regression to push to;",
+            "## PUSH_RESULTS=1 is what actually publishes, so an ordinary local run",
+            "## never writes to the shared dashboard. RMS_ID overrides the target.",
+            "PUSH_RESULTS ?= 0",
+            "RMS_ID ?=",
             "",
         ]
 
@@ -460,12 +597,17 @@ class MakefileGenerator:
             "",
             "## REPORT — scan all run logs and print pass/fail summary",
             "report:",
-            f"\t@if [ -f \"$(REPORT_SCRIPT)\" ]; then python $(REPORT_SCRIPT) --root $(ROOT) {proj_name_arg}--save-to $(ROOT)/logs/report.txt; "
-            r"else printf '\033[1m[EDA Buddy] Report skipped: run_report.py not found. Check EDA Buddy repository.\033[0m\n'; fi",
+            f"\t@if [ -n \"$(REPORT_OK)\" ]; then $(REPORT_CMD) --root $(ROOT) {proj_name_arg}--save-to $(ROOT)/logs/report.txt; "
+            r"else printf '\033[1m[EDA Buddy] Report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi",
             "",
         ]
 
+        # Stamped so `eda-buddy build/run` can tell a pristine Makefile from a
+        # hand-edited one and back the latter up before regenerating it.
+        body = "\n".join(content)
+        body = body.replace("\n", "\n{}{}\n".format(_CHECKSUM_PREFIX, compute_checksum(body)), 1)
+
         with open(output_path, "w") as f:
-            f.write("\n".join(content))
+            f.write(body)
 
         self.log.success(f"Makefile ready at {output_path}")

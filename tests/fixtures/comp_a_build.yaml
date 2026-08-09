@@ -1,0 +1,54 @@
+# comp_a — exercises: dependencies.build, relative + absolute sources,
+# include_dirs, defines, ${project.top_module} substitution, per-component
+# build hooks, and two toolchains (vcs + questa).
+project:
+  name: comp_a
+  top_module: comp_a_tb_top
+  timescale: 1ns/1ps
+  uvm_version: '1.2'
+
+paths:
+  root_dir: __FIXDIR__/comp_a
+
+dependencies:
+  build:
+  - __FIXDIR__/dep_vip_build.yaml
+
+compilation:
+  include_dirs:
+  - env
+  - tests
+  - /abs/comp_a/include
+  defines:
+  - COMP_A_V1_0
+  - UVM_NO_DEPRECATED
+  sources:
+    interfaces:
+    - top/comp_a_if.sv
+    packages:
+    - top/comp_a_pkg.sv
+    dut:
+    - /abs/vendor/glbl.v
+    modules:
+    - top/comp_a_tb_top.sv
+
+tool_settings:
+  vcs:
+    compile_flags:
+    - -sverilog
+    - -full64
+    - +v2k
+    elaborate_flags:
+    - -top ${project.top_module}
+  questa:
+    compile_flags:
+    - -sv
+    - -mfcu
+    - -timescale 1ns/1ps
+    elaborate_flags:
+    - vopt +acc ${project.top_module} -o db_opt
+    - work.glbl
+
+hooks:
+  pre: echo comp_a-pre-build
+  post: echo comp_a-post-build
