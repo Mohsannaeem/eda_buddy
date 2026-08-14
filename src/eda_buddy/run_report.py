@@ -348,16 +348,43 @@ def generate_report(root, project_name='', component=None, use_color=True, tests
 
 # ── Single-test one-liner (printed after each individual vsim call) ───────────
 
+# Dropped next to sim.log by print_single_result, i.e. only once that test's
+# simulator process has exited. Its presence is what separates a log that ends
+# without $finish because the test is *still writing it* from one that ends
+# without $finish because the run died — the two are textually identical.
+_DONE_MARKER = '.eda_buddy_done'
+
+
+def _is_done(log_path):
+    """True when the per-test hook has already run for this log's run dir."""
+    return os.path.exists(os.path.join(os.path.dirname(log_path), _DONE_MARKER))
+
+
+def _mark_done(log_path, status):
+    """Record that this test's simulation has finished. Best-effort."""
+    try:
+        with open(os.path.join(os.path.dirname(log_path), _DONE_MARKER), 'w') as f:
+            f.write(status)
+    except OSError:
+        pass
+
+
 def _scan_run_dir(comp_run_dir):
-    """Scan a directory and return (passed, failed, timeout) counts.
+    """Scan a directory and return (passed, failed, timeout, running) counts.
 
     Works for both layouts:
       Regression (REGDIR): <comp_run_dir>/<test>/sim.log
       Standalone:          <comp_run_dir>/<test>/run_<ts>/sim.log
+
+    Under `make ... JOBS=N` this runs while N-1 sibling tests are mid-flight,
+    so a partial sim.log must not be tallied as a failure. Only the ambiguous
+    no-$finish case consults the done-marker; a log that already reached PASS
+    or FAIL is counted either way, which keeps sessions recorded before the
+    marker existed scanning exactly as they did before.
     """
-    passed = failed = timeout = 0
+    passed = failed = timeout = running = 0
     if not os.path.isdir(comp_run_dir):
-        return passed, failed, timeout
+        return passed, failed, timeout, running
     for test_dir in os.listdir(comp_run_dir):
         test_path = os.path.join(comp_run_dir, test_dir)
         if not os.path.isdir(test_path):
@@ -371,11 +398,15 @@ def _scan_run_dir(comp_run_dir):
         elif st == 'FAIL':
             failed += 1
         elif st == 'TIMEOUT':
-            timeout += 1
-    return passed, failed, timeout
+            if _is_done(log):
+                timeout += 1
+            else:
+                running += 1
+    return passed, failed, timeout, running
 
 
-def print_single_result(log_path, test_name, total=None, comp_run_dir=None):
+def print_single_result(log_path, test_name, total=None, comp_run_dir=None,
+                        rms_id=None, rms_url=None):
     """
     Print a per-test status line after vsim finishes.
 
@@ -383,14 +414,21 @@ def print_single_result(log_path, test_name, total=None, comp_run_dir=None):
     running totals scoped to that session directory only:
 
       [ PASS ]  tc_010  seed=738335390  sim=3355 ns  wall=0:00:17  log: .../sim.log
-                Total=46 | Pass=10 | Fail=1 | Running=35
+                Total=46 | Pass=10 | Fail=1 | Running=3 | Pending=32
 
     In standalone mode (no comp_run_dir) only the status line is printed.
+
+    rms_id: when set (and in regression mode), the same tallies are also pushed
+            to the RMS as a progress snapshot — one row per completed test.
     """
     import sys
     use_color = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
     r  = parse_sim_log(log_path)
     st = r['status']
+
+    # Before the scan below, so this test counts itself as finished rather than
+    # as one of its own in-flight siblings.
+    _mark_done(log_path, st)
 
     tag = {
         'PASS':    _c('[ PASS ]', 'green',  'bold', use_color=use_color),
@@ -421,12 +459,16 @@ def print_single_result(log_path, test_name, total=None, comp_run_dir=None):
 
     # Running totals — regression mode only, scoped to REGDIR (current session)
     if comp_run_dir and comp_run_dir.strip():
-        passed, failed, timeout = _scan_run_dir(comp_run_dir)
+        passed, failed, timeout, running = _scan_run_dir(comp_run_dir)
         completed = passed + failed + timeout
-        running   = max((total or 0) - completed, 0)
+        pending   = max((total or 0) - completed - running, 0)
         total_str = str(total) if total is not None else '?'
-        print(_c(f'          Total={total_str} | Pass={passed} | Fail={failed + timeout} | Pending={running}',
+        print(_c(f'          Total={total_str} | Pass={passed} | Fail={failed + timeout}'
+                 f' | Running={running} | Pending={pending}',
                  'cyan', use_color=use_color))
+        if rms_id:
+            push_progress(rms_id, comp_run_dir, total=total, url=rms_url,
+                          counts=(passed, failed, timeout))
     print()
 
 # ── Full regression report ────────────────────────────────────────────────────
@@ -451,8 +493,10 @@ def run_report(root, project_name='', component=None, save_to=None,
         print(f"[REPORT] Saved: {save_to}")
 
     if post_cmd and post_cmd.strip():
-        # Tally actuals from the scan so placeholders get real numbers
-        passed, failed, timeout = _scan_run_dir(reg_dir or os.path.join(root, component or '', 'run'))
+        # Tally actuals from the scan so placeholders get real numbers.
+        # `running` is 0 here — the group target waits for every sub-make before
+        # it reports — so completed tests are the whole session.
+        passed, failed, timeout, _ = _scan_run_dir(reg_dir or os.path.join(root, component or '', 'run'))
         total  = passed + failed + timeout
         cmd    = post_cmd.format(total=total, passed=passed, failed=failed + timeout)
         # Convert Windows absolute paths (D:\foo\bar) to Cygwin (/cygdrive/d/foo/bar)
@@ -475,18 +519,78 @@ def run_report(root, project_name='', component=None, save_to=None,
         subprocess.run(cmd, shell=True, check=False)
 
 
+_SESSION_TS_RE = re.compile(r'_(\d{8})_(\d{6})$')
+
+
+def _session_start(reg_dir):
+    """ISO start time recovered from the session dir name, or None.
+
+    Group session dirs are named `<group>_%Y%m%d_%H%M%S` by the generated
+    Makefile, which is the only record of when the regression began — the
+    process that started it is long gone by the time the last test reports.
+    Without it the RMS stamps start == end and every run shows zero duration.
+    """
+    if not reg_dir:
+        return None
+    m = _SESSION_TS_RE.search(os.path.basename(os.path.normpath(reg_dir)))
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S').isoformat()
+    except ValueError:
+        return None
+
+
 def push_to_rms(rms_id, root, component=None, reg_dir=None, url=None):
-    """Push this session's tallies to the RMS, in this process.
+    """Push this session's final tallies to the RMS, in this process.
 
     Calling push_result directly rather than shelling out avoids the two things
     that broke the equivalent post-cmd hook: quoting an interpreter path the
     shell may not resolve, and Windows/Cygwin path rewriting.
     """
-    from .push_result import push
+    from .push_result import derive_status, push
 
-    passed, failed, timeout = _scan_run_dir(reg_dir or os.path.join(root, component or '', 'run'))
+    scan_dir = reg_dir or os.path.join(root, component or '', 'run')
+    passed, failed, timeout, _ = _scan_run_dir(scan_dir)
     total = passed + failed + timeout
-    return push(rms_id, total, passed, failed + timeout, url=url, log=reg_dir)
+    report = os.path.join(reg_dir, 'report.txt') if reg_dir else None
+    return push(rms_id, total, passed, failed, timeout=timeout, url=url,
+                start=_session_start(reg_dir),
+                log=report if report and os.path.exists(report) else reg_dir,
+                machine_log=reg_dir,
+                status=derive_status(total, passed, failed, timeout))
+
+
+def push_progress(rms_id, reg_dir, total=None, url=None, counts=None):
+    """Push an in-flight snapshot of a running regression to the RMS.
+
+    Called from the per-test hook, so the dashboard advances as tests land
+    instead of staying empty until the group target finishes — which for a long
+    regression is hours. Each call appends one row, exactly like the final push:
+    the API only ever adds to run_results, so the progress rows are the history
+    of the run and the last row is the outcome.
+
+    `total` is the group's declared test count, not the completed count, so a
+    snapshot reads as 12-of-46 rather than as a finished 12-test regression.
+    Status is left to the server while nothing has gone wrong — there is no
+    "running" state in the API to send — and stated explicitly as soon as
+    something has, so a failure is visible before the group ends.
+    """
+    from .push_result import derive_status, push
+
+    passed, failed, timeout = counts if counts else _scan_run_dir(reg_dir)[:3]
+    completed = passed + failed + timeout
+    total     = max(total or 0, completed)
+
+    # The last test to finish would otherwise push a snapshot the group's final
+    # push repeats verbatim seconds later — two rows for one outcome.
+    if completed >= total:
+        return 0
+
+    status = derive_status(total, passed, failed, timeout) if (failed or timeout) else None
+    return push(rms_id, total, passed, failed, timeout=timeout, url=url,
+                start=_session_start(reg_dir), log=reg_dir, machine_log=reg_dir,
+                status=status)
 
 # ── CLI entry point (invoked from Makefile) ───────────────────────────────────
 
@@ -510,7 +614,8 @@ def main():
     p.add_argument('--post-cmd',     default=None,
                    help='Shell command run after report; {total}/{passed}/{failed} substituted with actual counts')
     p.add_argument('--rms-id',       default=None,
-                   help='RMS regression id; results are pushed in-process, no shell command needed')
+                   help='RMS regression id; results are pushed in-process, no shell command needed. '
+                        'With --single-log this pushes a progress snapshot instead of a final row')
     p.add_argument('--rms-url',      default=None,
                    help='RMS base URL (default: $RMS_URL or http://localhost:8000)')
 
@@ -520,7 +625,9 @@ def main():
         print_single_result(a.single_log,
                             a.test_name or os.path.basename(a.single_log),
                             total=a.total,
-                            comp_run_dir=a.comp_run_dir)
+                            comp_run_dir=a.comp_run_dir,
+                            rms_id=a.rms_id,
+                            rms_url=a.rms_url)
     elif a.root:
         tests   = a.tests.split(',') if a.tests else None
         reg_dir = a.reg_dir or None
