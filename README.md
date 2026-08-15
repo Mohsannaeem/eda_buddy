@@ -421,6 +421,8 @@ ones from its flags.
 | `VERBOSITY=UVM_HIGH` | UVM verbosity | `runtime.common_args` | `--verbosity` |
 | `PUSH_RESULTS=0\|1` | Publish results to the RMS | off | `--push-results` |
 | `RMS_ID=MY_REG` | RMS regression to publish to | `groups.<name>.rms_id` | `--rms-id` |
+| `RMS_URL=http://host:8000` | RMS backend base URL | `$RMS_URL`, else localhost:8000 | `--rms-url` |
+| `RMS_PROGRESS=0\|1` | Push a snapshot after every test | on | `--rms-progress` / `--no-rms-progress` |
 | `JOBS=N` | Run a group's tests N-way parallel | — | `-j N` |
 | `PYTHON=python3` | Interpreter used for reporting and RMS push | — | — |
 
@@ -636,8 +638,58 @@ single unambiguous switch.
 If neither the group nor `RMS_ID` names a regression, `--push-results` has
 nothing to push to and is silently a no-op.
 
-Set `RMS_URL` (or pass `--rms-url` to `run_report`) if the backend is not on
-`http://localhost:8000`.
+Set `RMS_URL` — as an environment variable, a make variable, or `--rms-url` —
+if the backend is not on `http://localhost:8000`.
+
+### Live progress
+
+When publishing is on, EDA Buddy pushes a **snapshot after every test finishes**,
+not only once the group ends. A regression that takes hours shows up on the
+dashboard as it advances instead of staying empty until the last test lands.
+
+The RMS API only ever appends to `run_results`, so each snapshot is its own row:
+a 46-test regression produces up to 46 progress rows plus the final one, and the
+run's history reads top to bottom. What each row carries:
+
+- `total_tests` is the group's **declared** test count, so a snapshot reads as
+  12-of-46 rather than as a finished 12-test regression
+- `failed_tests` and `timeout_tests` are counted separately — a test still
+  writing its log is neither, it is simply not counted yet
+- `status` is left to the server while nothing has gone wrong (the API has no
+  "running" state to send) and stated explicitly the moment something has, so a
+  failure is visible on the dashboard before the group ends
+- `start_time` is recovered from the session directory name, so the RMS shows
+  the real elapsed time rather than start == end
+
+The last test to finish does not push a snapshot — the group's final push would
+repeat it verbatim seconds later.
+
+Turn it off with `--no-rms-progress` (or `RMS_PROGRESS=0`) to publish only the
+one final row:
+
+```bash
+eda-buddy run regression --comp my_vip --push-results --no-rms-progress
+```
+
+### Build failures
+
+`eda-buddy all` publishes a `build_fail` row when compilation fails, so a run
+that never got as far as a test is distinguishable on the dashboard from one
+that was never started. No tests ran, so the row is `0/0/0`, and both log paths
+point at `<root>/<comp>/build/<tool>.log` — there is no session directory yet,
+and the build log is the only artifact worth reading.
+
+### What the log paths point at
+
+| Row | `log_path` (View Log) | `machine_log_path` (Logs path) |
+|---|---|---|
+| Progress snapshot | session dir | session dir |
+| Final | `<session>/report.txt` | session dir |
+| `build_fail` | `<comp>/build/<tool>.log` | same |
+
+`log_path` narrows to the saved report on the final push — the pass/fail table
+with failure signatures is what you want when you click through. `machine_log_path`
+stays the session directory, which is where the per-test `sim.log` files are.
 
 **Custom post-run commands** still use `hooks.post`, which is unchanged and runs
 alongside `rms_id`:
@@ -670,18 +722,27 @@ If the RMS server is not running, the script prints a warning and exits cleanly 
 ### push_result.py options
 
 ```
-python -m eda_buddy.push_result --id MY_REGRESSION --total 46 --passed 44 --failed 2
+python -m eda_buddy.push_result --id MY_REGRESSION --total 46 --passed 44 --failed 1 --timeout 1
 
 Options:
-  --id      Regression ID (must exist in the RMS GUI)
-  --total   Total number of tests
-  --passed  Number of tests that passed
-  --failed  Number of tests that failed
-  --url     RMS backend URL  (default: http://localhost:8000)
-  --start   Start time ISO 8601  (default: server uses now)
-  --end     End time ISO 8601    (default: server uses now)
-  --log     Path to regression log file
+  --id       Regression ID (must exist in the RMS GUI)
+  --total    Total number of tests
+  --passed   Number of tests that passed
+  --failed   Number of tests that failed
+  --timeout  Tests that hit their time limit (default: 0)
+  --status   passed | failed | build_fail | timeout | aborted
+             (default: derived from the counts by the server;
+              use build_fail when the build did not compile and no tests ran)
+  --url      RMS backend URL  (default: $RMS_URL or http://localhost:8000)
+  --start    Start time ISO 8601  (default: server uses now)
+  --end      End time ISO 8601    (default: server uses now)
+  --log      Path to regression log file — the browsable "View Log" link
+  --machine-log  On-agent logs path, shown as the "Logs path" row in the
+                 result email. Display only; does not affect "View Log"
 ```
+
+The regression must already exist — this only adds a row to `run_results`, it
+never creates a regression. `passed + failed + timeout` may not exceed `total`.
 
 ---
 

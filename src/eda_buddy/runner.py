@@ -106,6 +106,50 @@ class Runner:
             "'{}' is not a test or group in component '{}'.\n  groups: {}\n  tests : {}".format(
                 name, comp, ", ".join(groups) or "(none)", ", ".join(tests) or "(none)"))
 
+    def rms_target(self, comp, name, variables=None):
+        """The RMS regression this run publishes to, or None when it publishes.
+
+        Mirrors the Makefile's own resolution: nothing is published unless
+        PUSH_RESULTS=1, RMS_ID overrides the group's rms_id, and a group without
+        an rms_id has nowhere to push.
+        """
+        variables = variables or {}
+        if str(variables.get("PUSH_RESULTS") or "0") != "1":
+            return None
+        override = str(variables.get("RMS_ID") or "").strip()
+        if override:
+            return override
+        _, run_cfg = self.project.component(comp)
+        g_val = (run_cfg.get("groups", {}) or {}).get(name)
+        if isinstance(g_val, dict):
+            return str(g_val.get("rms_id") or "").strip() or None
+        return None
+
+    def push_build_fail(self, comp, tool, name, variables=None):
+        """Record a compile failure in the RMS.
+
+        Without this the dashboard shows nothing at all for a run that never
+        compiled — indistinguishable from a regression that was never started.
+        No tests ran, so the row is 0/0/0 with an explicit build_fail status.
+
+        There is no session directory to point at — the failure happened before
+        one was made — so both log paths carry the tool's build log, which is
+        the only artifact of the run and the one thing worth reading.
+        """
+        rms_id = self.rms_target(comp, name, variables)
+        if not rms_id or self.dry_run:
+            return
+        # Matches the generated Makefile: <ROOT>/<comp>/build/<tool>.log
+        log = os.path.join(self.project.root, comp, "build", f"{tool}.log")
+        if not os.path.exists(log):
+            log = None
+        try:
+            from .push_result import push
+            push(rms_id, 0, 0, 0, url=(variables or {}).get("RMS_URL"),
+                 log=log, machine_log=log, status="build_fail")
+        except Exception as e:                       # reporting never fails a run
+            self.log.warning(f"RMS build_fail push skipped: {e}")
+
     def default_group(self, comp):
         """The group `all` runs when none is named."""
         _, run_cfg = self.project.component(comp)
@@ -176,6 +220,7 @@ class Runner:
         rc = self.make([self.build_target(comp, tool)], build_vars)
         if rc:
             self.log.error(f"Build failed (exit {rc}); not running {target_name}.")
+            self.push_build_fail(comp, tool, target_name, variables)
             return rc
 
         self.log.header(f"[2/2] Run — {target_name} ({tool})")

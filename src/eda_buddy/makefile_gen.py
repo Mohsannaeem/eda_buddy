@@ -391,7 +391,8 @@ class MakefileGenerator:
             # If run_report.py is missing, print a bold warning and skip — sim result is unaffected.
             _report_cmd = (f"$(REPORT_CMD) --single-log $$LOGFILE --test-name {t_name} "
                            f"--total $(if $(TOTAL),$(TOTAL),{total_tests}) "
-                           f"$(if $(REGDIR),--comp-run-dir $(REGDIR),)")
+                           f"$(if $(REGDIR),--comp-run-dir $(REGDIR),) "
+                           f"$(RMS_PROGRESS_ARG) $(RMS_URL_ARG)")
             _skip_msg   = r"printf '\033[1m[EDA Buddy] Per-test report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'"
             _sl = (f"SIM_RC=$$?; "
                    f"if [ -n \"$(REPORT_OK)\" ]; then {_report_cmd}; else {_skip_msg}; fi; "
@@ -475,7 +476,7 @@ class MakefileGenerator:
                 # $(MAKE) -k keeps going on failures; || true lets the chain continue.
                 report_args = (f'--root $(ROOT) --component {name} {proj_name_arg} '
                                f'--tests {tests_csv} --reg-dir $$REGDIR --save-to $$REGDIR/report.txt '
-                               f'{post_cmd_arg} {rms_id_arg}')
+                               f'{post_cmd_arg} {rms_id_arg} $(RMS_URL_ARG)')
                 content += [
                     f".PHONY: {tool}_run_{name}_{g_name}",
                     f"{tool}_run_{name}_{g_name}:",
@@ -483,7 +484,11 @@ class MakefileGenerator:
                     f"\t@REGDIR=\"{self._comp_run(name)}/{g_name}_$$(date +%Y%m%d_%H%M%S)\"; \\",
                     f"\tmkdir -p \"$$REGDIR\"; \\",
                     f"\techo \"[{g_name.upper()}] Session dir: $$REGDIR  Total={len(tests)} tests\"; \\",
-                    f"\t$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL={len(tests)} {test_targets} || true; \\",
+                    # RMS_ID is passed down explicitly: the per-test targets are
+                    # shared by every group, so which regression a test's progress
+                    # snapshot belongs to is only known here, at the group.
+                    f"\t$(MAKE) -k $(PARALLEL_FLAGS) REGDIR=$$REGDIR TOTAL={len(tests)} "
+                    f"RMS_ID=\"{_effective_id}\" {test_targets} || true; \\",
                     f"\techo \"\"; \\",
                     f"\tif [ -n \"$(REPORT_OK)\" ]; then $(REPORT_CMD) {report_args}; "
                     r"else printf '\033[1m[EDA Buddy] Final report skipped: eda_buddy not importable. Run: pip install -e <path-to-eda_buddy>\033[0m\n'; fi",
@@ -549,6 +554,19 @@ class MakefileGenerator:
             "## never writes to the shared dashboard. RMS_ID overrides the target.",
             "PUSH_RESULTS ?= 0",
             "RMS_ID ?=",
+            "## Empty = http://localhost:8000 (or $RMS_URL from the environment).",
+            "RMS_URL ?=",
+            "",
+            "## Progress reporting: push a snapshot row after every test finishes,",
+            "## so the dashboard advances during a long regression instead of only",
+            "## at the end. RMS_PROGRESS=0 leaves just the single final push.",
+            "RMS_PROGRESS ?= 1",
+            "",
+            "## Recursive (=) not simple (:=): RMS_ID is handed to the per-test",
+            "## sub-make by the group target, so these must expand where they are used.",
+            "RMS_URL_ARG      = $(if $(RMS_URL),--rms-url $(RMS_URL),)",
+            "RMS_PROGRESS_ARG = $(if $(filter 1,$(PUSH_RESULTS)),"
+            "$(if $(filter 1,$(RMS_PROGRESS)),$(if $(RMS_ID),--rms-id $(RMS_ID),),),)",
             "",
         ]
 

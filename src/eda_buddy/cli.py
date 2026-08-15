@@ -69,6 +69,16 @@ def _add_run_opts(p):
     p.add_argument("--rms-id", default=None, metavar="ID",
                    help="RMS regression to publish to, overriding the group's "
                         "rms_id. Implies --push-results")
+    p.add_argument("--rms-url", default=None, metavar="URL",
+                   help="RMS backend base URL "
+                        "(default: $RMS_URL or http://localhost:8000)")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--rms-progress", dest="rms_progress", action="store_const",
+                   const="1", default=None,
+                   help="Push a snapshot after every test, so the dashboard "
+                        "advances during the run (the default when publishing)")
+    g.add_argument("--no-rms-progress", dest="rms_progress", action="store_const",
+                   const="0", help="Publish only the final result row")
     p.add_argument("--verbosity", default=None,
                    help="Override UVM verbosity for this run, e.g. UVM_HIGH (VERBOSITY=)")
     p.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
@@ -134,6 +144,8 @@ def _run_vars(args):
         "VERBOSITY":    getattr(args, "verbosity", None),
         "PUSH_RESULTS": push,
         "RMS_ID":       rms_id,
+        "RMS_URL":      getattr(args, "rms_url", None),
+        "RMS_PROGRESS": getattr(args, "rms_progress", None),
         "JOBS":         getattr(args, "jobs", None),
     }
 
