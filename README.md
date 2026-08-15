@@ -641,35 +641,66 @@ nothing to push to and is silently a no-op.
 Set `RMS_URL` — as an environment variable, a make variable, or `--rms-url` —
 if the backend is not on `http://localhost:8000`.
 
+### The run's lifecycle
+
+With publishing on, a regression group makes three kinds of call:
+
+| When | Call | Effect |
+|---|---|---|
+| Group target starts | `PATCH /api/runs/<id>` | `status=running`, `progress=0`, records the CI job URL |
+| Each test finishes | `POST /api/runs/result` `final=false` | updates the open row in place, no email |
+| Group target ends | `POST /api/runs/result` | settles the status, stamps `end_time`, sends the email |
+
+The opening PATCH fires **before the first test launches**, so the dashboard
+shows the run as live from the moment the job starts rather than from whenever
+the first result lands — on a regression whose first test takes twenty minutes,
+that is twenty minutes of a run that looks like it never started. It is sent
+from the group target, so it covers `eda-buddy run`, `eda-buddy all`, and a bare
+`make <group> PUSH_RESULTS=1` alike.
+
+`pipeline_url` defaults to `$BUILD_URL`, which Jenkins sets on every build, so
+nothing needs plumbing through the YAML — run under Jenkins and the link
+appears. Override it with `--pipeline-url`. A failed PATCH prints one line and
+continues: a missing status is not a reason to skip the regression.
+
 ### Live progress
 
 When publishing is on, EDA Buddy pushes a **snapshot after every test finishes**,
 not only once the group ends. A regression that takes hours shows up on the
 dashboard as it advances instead of staying empty until the last test lands.
 
-The RMS API only ever appends to `run_results`, so each snapshot is its own row:
-a 46-test regression produces up to 46 progress rows plus the final one, and the
-run's history reads top to bottom. What each row carries:
+**A run is one row.** Snapshots are sent with `final=false`, which holds the row
+at `running` with no `end_time`, so the next push updates it in place. The
+group's closing push settles the terminal status, stamps `end_time`, and is the
+only one that sends the result email — the run produces exactly one mail, at the
+end, no matter how many tests it has. What the row carries while it is open:
 
-- `total_tests` is the group's **declared** test count, so a snapshot reads as
-  12-of-46 rather than as a finished 12-test regression
+- `total_tests` is the group's **declared** test count, so the row reads as
+  12-of-46 rather than as a finished 12-test regression, and the server's
+  progress bar tracks `(passed + failed + timeout) / total` live
 - `failed_tests` and `timeout_tests` are counted separately — a test still
   writing its log is neither, it is simply not counted yet
-- `status` is left to the server while nothing has gone wrong (the API has no
-  "running" state to send) and stated explicitly the moment something has, so a
-  failure is visible on the dashboard before the group ends
+- `status` stays `running` until the closing push; a mid-run `--status` is
+  ignored by the server by design
 - `start_time` is recovered from the session directory name, so the RMS shows
   the real elapsed time rather than start == end
 
-The last test to finish does not push a snapshot — the group's final push would
-repeat it verbatim seconds later.
-
-Turn it off with `--no-rms-progress` (or `RMS_PROGRESS=0`) to publish only the
-one final row:
+Turn it off with `--no-rms-progress` (or `RMS_PROGRESS=0`) to send only the
+single closing push:
 
 ```bash
 eda-buddy run regression --comp my_vip --push-results --no-rms-progress
 ```
+
+Two consequences of the row being held open, both inherited from the server's
+"one open running row per regression id" matcher:
+
+- **Two concurrent runs of the same `rms_id` share a row** and will overwrite
+  each other's counts. Give each a distinct id — or run them with
+  `RMS_PROGRESS=0`, where each closing push settles its own row.
+- **An interrupted run leaves its row open.** Ctrl-C between the last snapshot
+  and the closing push means nothing settles it, and the next run of that id
+  adopts the stale row instead of starting a fresh one.
 
 ### Build failures
 
@@ -730,9 +761,14 @@ Options:
   --passed   Number of tests that passed
   --failed   Number of tests that failed
   --timeout  Tests that hit their time limit (default: 0)
+  --intermediate  Mid-run update: keeps the run's row open at `running`,
+                  reused by the next push. Sends no email. Omit it on the
+                  last push to settle the row and fire the notification
   --status   passed | failed | build_fail | timeout | aborted
              (default: derived from the counts by the server;
               use build_fail when the build did not compile and no tests ran)
+             Honored only on the final push
+
   --url      RMS backend URL  (default: $RMS_URL or http://localhost:8000)
   --start    Start time ISO 8601  (default: server uses now)
   --end      End time ISO 8601    (default: server uses now)
@@ -741,8 +777,25 @@ Options:
                  result email. Display only; does not affect "View Log"
 ```
 
-The regression must already exist — this only adds a row to `run_results`, it
+The regression must already exist — this only writes a `run_results` row, it
 never creates a regression. `passed + failed + timeout` may not exceed `total`.
+
+```bash
+# at job start, before the first test
+python -m eda_buddy.push_result --id MY_REG --mark-running
+# during the run, as often as there is progress
+python -m eda_buddy.push_result --id MY_REG --total 450 --passed 120 --failed 3 --intermediate
+# once, to close the run out and send the mail
+python -m eda_buddy.push_result --id MY_REG --total 450 --passed 412 --failed 38
+```
+
+`--mark-running` takes no counts — it PATCHes the regression itself rather than
+writing a result row, and is the direct equivalent of the Jenkins pre-step:
+
+```
+--mark-running        PATCH /api/runs/<id> {status: running, progress: 0}
+--pipeline-url URL    CI job link recorded with it (default: $BUILD_URL)
+```
 
 ---
 
