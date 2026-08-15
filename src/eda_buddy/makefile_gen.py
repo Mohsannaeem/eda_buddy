@@ -467,6 +467,15 @@ class MakefileGenerator:
             _effective_id = f'$(if $(RMS_ID),$(RMS_ID),{rms_id})' if rms_id else '$(RMS_ID)'
             rms_id_arg    = (f'$(if $(filter 1,$(PUSH_RESULTS)),'
                              f'$(if {_effective_id},--rms-id {_effective_id},),)')
+            # Job-start PATCH. Collapses to `true` when publishing is off, when no
+            # regression is named, or when EDA Buddy is not importable — the same
+            # three conditions that silence every other RMS step.
+            mark_running_cmd = (
+                f'$(if $(REPORT_OK),'
+                f'$(if $(filter 1,$(PUSH_RESULTS)),'
+                f'$(if {_effective_id},'
+                f'$(PUSH_CMD) --id {_effective_id} --mark-running $(PUSH_URL_ARG),true),'
+                f'true),true)')
             pre_hook_lines = self._hook_lines(f"PRE-{g_name.upper()}", pre_hook)
 
             for tool in ('vcs', 'questa', 'xcelium'):
@@ -484,6 +493,11 @@ class MakefileGenerator:
                     f"\t@REGDIR=\"{self._comp_run(name)}/{g_name}_$$(date +%Y%m%d_%H%M%S)\"; \\",
                     f"\tmkdir -p \"$$REGDIR\"; \\",
                     f"\techo \"[{g_name.upper()}] Session dir: $$REGDIR  Total={len(tests)} tests\"; \\",
+                    # Job start: open the regression before the first test, so the
+                    # dashboard shows the run live from now rather than from
+                    # whenever the first result lands. Expands to `true` whenever
+                    # publishing is off, so the chain stays a valid shell command.
+                    f"\t{mark_running_cmd} || true; \\",
                     # RMS_ID is passed down explicitly: the per-test targets are
                     # shared by every group, so which regression a test's progress
                     # snapshot belongs to is only known here, at the group.
@@ -565,6 +579,8 @@ class MakefileGenerator:
             "## Recursive (=) not simple (:=): RMS_ID is handed to the per-test",
             "## sub-make by the group target, so these must expand where they are used.",
             "RMS_URL_ARG      = $(if $(RMS_URL),--rms-url $(RMS_URL),)",
+            "## push_result names the same option --url, not --rms-url.",
+            "PUSH_URL_ARG     = $(if $(RMS_URL),--url $(RMS_URL),)",
             "RMS_PROGRESS_ARG = $(if $(filter 1,$(PUSH_RESULTS)),"
             "$(if $(filter 1,$(RMS_PROGRESS)),$(if $(RMS_ID),--rms-id $(RMS_ID),),),)",
             "",

@@ -40,10 +40,23 @@ _FINISH_RE  = re.compile(r'\$finish')
 # Actual UVM_ERROR/FATAL message lines (not the count summary "UVM_ERROR :  0")
 _ERRMSG_RE  = re.compile(r'#\s+(UVM_(?:ERROR|FATAL)\s+\S.*?@\s*\d+.*)')
 
+# ── Build/elaboration failure detection ───────────────────────────────────────
+# A design that never loaded produces a log with no $finish and no UVM Report
+# Summary — textually identical to a run that ran out of time. Distinguishing
+# them needs the tool's own error lines: vsim/vopt/vlog emit a numbered
+# diagnostic ("(vsim-19)") and, when elaboration gives up, "Error loading
+# design". Neither can appear from a simulation that actually started.
+_TOOL_ERR_RE = re.compile(
+    r'^#\s*(?:\*\*\s*)?(?:Error|Fatal)\b[^\n]*\((?:vsim|vopt|vlog|vcom|vlib|vmap|vish)-\d+\)[^\n]*',
+    re.M)
+_LOAD_FAIL_RE = re.compile(r'^#\s*(?:Error loading design|Errors during (?:elaboration|optimization))[^\n]*', re.M)
+# Any UVM report line at all — proof the testbench got as far as running.
+_UVM_ANY_RE = re.compile(r'#\s+UVM_(?:INFO|WARNING|ERROR|FATAL)\b')
+
 def parse_sim_log(log_path):
     """
     Returns:
-        status      : 'PASS' | 'FAIL' | 'TIMEOUT' | 'NO_LOG'
+        status      : 'PASS' | 'FAIL' | 'TIMEOUT' | 'BUILD_FAIL' | 'NO_LOG'
         seed        : actual seed string
         start_time  : wall-clock start from log header
         elapsed     : wall-clock elapsed e.g. '0:00:18'
@@ -52,7 +65,8 @@ def parse_sim_log(log_path):
         uvm_fatals  : int
         uvm_warnings: int
         quit_count  : int
-        signatures  : list[str] — UVM_ERROR/FATAL message lines for failures
+        signatures  : list[str] — UVM_ERROR/FATAL message lines for failures,
+                      or the simulator's own diagnostics for BUILD_FAIL
         log_path    : str
     """
     r = dict(status='NO_LOG', seed='-', start_time='-', elapsed='-',
@@ -107,7 +121,23 @@ def parse_sim_log(log_path):
     has_summary = '--- UVM Report Summary ---' in content
     has_finish  = bool(_FINISH_RE.search(content))
 
-    if not has_finish and not has_summary:
+    # Build failure outranks the timeout fallback: both look like "no $finish,
+    # no summary", but a build failure has the tool's diagnostics and, crucially,
+    # no UVM output whatsoever — the testbench never got to run. Requiring the
+    # absence of UVM lines keeps a mid-simulation "** Error" from a $error or a
+    # PLI call from being misread as a build failure.
+    tool_errs = _LOAD_FAIL_RE.findall(content) + _TOOL_ERR_RE.findall(content)
+    if tool_errs and not _UVM_ANY_RE.search(content) and not has_summary:
+        r['status'] = 'BUILD_FAIL'
+        # Simulator diagnostics stand in for UVM signatures here; dedupe while
+        # preserving order, since vsim repeats the same error per design unit.
+        seen = set()
+        for line in tool_errs:
+            sig = line.lstrip('# ').strip()
+            if sig and sig not in seen:
+                seen.add(sig)
+                r['signatures'].append(sig)
+    elif not has_finish and not has_summary:
         r['status'] = 'TIMEOUT'
     elif r['uvm_fatals'] > 0 or r['uvm_errors'] > 0:
         r['status'] = 'FAIL'
@@ -195,7 +225,7 @@ def collect_results(root, component=None, tests=None, reg_dir=None):
 _COLS = [
     ('#',        4,  'r'),
     ('Test',    50,  'l'),
-    ('Status',   9,  'c'),
+    ('Status',  10,  'c'),   # widest label is BUILD_FAIL
     ('Seed',    12,  'r'),
     ('Elapsed',  8,  'r'),
     ('SimTime', 10,  'r'),
@@ -206,10 +236,11 @@ _TW = 1 + sum(w + 3 for w in _CW)             # total table width incl. all bord
 _SW = _TW - _CW[0] - 7                        # span-row text width (cols 2..end merged)
 
 _STATUS_COLOR = {
-    'PASS':    ('green',  'bold'),
-    'FAIL':    ('red',    'bold'),
-    'TIMEOUT': ('yellow', 'bold'),
-    'NO_LOG':  ('yellow',),
+    'PASS':       ('green',  'bold'),
+    'FAIL':       ('red',    'bold'),
+    'TIMEOUT':    ('yellow', 'bold'),
+    'BUILD_FAIL': ('red',    'bold'),
+    'NO_LOG':     ('yellow',),
 }
 
 def _tbl_sep():
@@ -268,7 +299,8 @@ def generate_report(root, project_name='', component=None, use_color=True, tests
     emit(f"  Root      : {root}")
     emit('=' * _TW)
 
-    overall_total = overall_pass = overall_fail = overall_timeout = overall_nolog = 0
+    overall_total = overall_pass = overall_fail = overall_timeout = 0
+    overall_build = overall_nolog = 0
 
     for comp, entries in results.items():
         emit()
@@ -277,7 +309,7 @@ def generate_report(root, project_name='', component=None, use_color=True, tests
         emit(_tbl_header(use_color=use_color))
         emit(_tbl_sep())
 
-        comp_pass = comp_fail = comp_timeout = comp_nolog = 0
+        comp_pass = comp_fail = comp_timeout = comp_build = comp_nolog = 0
 
         for idx, e in enumerate(entries, 1):
             st = e['status']
@@ -289,11 +321,19 @@ def generate_report(root, project_name='', component=None, use_color=True, tests
 
             # Row 2: log path
             log_text = f"log: {e['log_path']}"
-            log_color = 'red' if st in ('FAIL', 'TIMEOUT') else None
+            log_color = 'red' if st in ('FAIL', 'TIMEOUT', 'BUILD_FAIL') else None
             emit(_tbl_span(log_text, color=log_color, use_color=use_color))
 
             # Row 3+: failure detail
-            if st == 'TIMEOUT':
+            if st == 'BUILD_FAIL':
+                emit(_tbl_span('BUILD_FAIL - design never elaborated; the test did not run',
+                               color='red', use_color=use_color))
+                for sig in e['signatures'][:5]:
+                    emit(_tbl_span(sig, color='red', use_color=use_color))
+                if len(e['signatures']) > 5:
+                    emit(_tbl_span(f'... ({len(e["signatures"]) - 5} more tool errors)',
+                                   color='red', use_color=use_color))
+            elif st == 'TIMEOUT':
                 emit(_tbl_span('TIMEOUT - simulation did not reach $finish (check UVM_TIMEOUT)',
                                color='yellow', use_color=use_color))
             elif st == 'FAIL':
@@ -308,10 +348,11 @@ def generate_report(root, project_name='', component=None, use_color=True, tests
 
             emit(_tbl_sep())
 
-            if   st == 'PASS':    comp_pass    += 1
-            elif st == 'FAIL':    comp_fail    += 1
-            elif st == 'TIMEOUT': comp_timeout += 1
-            else:                 comp_nolog   += 1
+            if   st == 'PASS':       comp_pass    += 1
+            elif st == 'FAIL':       comp_fail    += 1
+            elif st == 'TIMEOUT':    comp_timeout += 1
+            elif st == 'BUILD_FAIL': comp_build   += 1
+            else:                    comp_nolog   += 1
 
         total = len(entries)
         pct   = f"{100 * comp_pass / total:.1f}%" if total else "-%"
@@ -320,6 +361,7 @@ def generate_report(root, project_name='', component=None, use_color=True, tests
                    f"PASS: {comp_pass}   "
                    f"FAIL: {comp_fail}   "
                    f"TIMEOUT: {comp_timeout}   "
+                   f"BUILD_FAIL: {comp_build}   "
                    f"NO_LOG: {comp_nolog}   "
                    f"Pass rate: {pct}")
         emit(_c(summary, 'bold', use_color=use_color))
@@ -329,17 +371,21 @@ def generate_report(root, project_name='', component=None, use_color=True, tests
         overall_pass    += comp_pass
         overall_fail    += comp_fail
         overall_timeout += comp_timeout
+        overall_build   += comp_build
         overall_nolog   += comp_nolog
 
     # Overall footer
     emit('=' * _TW)
     o_pct = f"{100 * overall_pass / overall_total:.1f}%" if overall_total else "-%"
-    verdict = 'PASS' if overall_fail == 0 and overall_timeout == 0 else 'FAIL'
+    # A build failure is a red verdict: nothing was proven about the design.
+    verdict = ('PASS' if overall_fail == 0 and overall_timeout == 0
+                         and overall_build == 0 else 'FAIL')
     emit(_c(f"  VERDICT : {verdict}", 'green' if verdict == 'PASS' else 'red', 'bold', use_color=use_color))
     emit(f"  Total: {overall_total}   "
          f"PASS: {overall_pass}   "
          f"FAIL: {overall_fail}   "
          f"TIMEOUT: {overall_timeout}   "
+         f"BUILD_FAIL: {overall_build}   "
          f"NO_LOG: {overall_nolog}   "
          f"Pass rate: {o_pct}")
     emit('=' * _TW)
@@ -370,7 +416,7 @@ def _mark_done(log_path, status):
 
 
 def _scan_run_dir(comp_run_dir):
-    """Scan a directory and return (passed, failed, timeout, running) counts.
+    """Scan a directory and return (passed, failed, timeout, build_fail, running).
 
     Works for both layouts:
       Regression (REGDIR): <comp_run_dir>/<test>/sim.log
@@ -378,13 +424,15 @@ def _scan_run_dir(comp_run_dir):
 
     Under `make ... JOBS=N` this runs while N-1 sibling tests are mid-flight,
     so a partial sim.log must not be tallied as a failure. Only the ambiguous
-    no-$finish case consults the done-marker; a log that already reached PASS
-    or FAIL is counted either way, which keeps sessions recorded before the
-    marker existed scanning exactly as they did before.
+    cases consult the done-marker; a log that already reached PASS or FAIL is
+    counted either way, which keeps sessions recorded before the marker existed
+    scanning exactly as they did before. BUILD_FAIL is gated the same way as
+    TIMEOUT: a suppressible tool error can be printed early by a run that then
+    goes on to elaborate, and only the marker proves the process has exited.
     """
-    passed = failed = timeout = running = 0
+    passed = failed = timeout = build_fail = running = 0
     if not os.path.isdir(comp_run_dir):
-        return passed, failed, timeout, running
+        return passed, failed, timeout, build_fail, running
     for test_dir in os.listdir(comp_run_dir):
         test_path = os.path.join(comp_run_dir, test_dir)
         if not os.path.isdir(test_path):
@@ -402,7 +450,12 @@ def _scan_run_dir(comp_run_dir):
                 timeout += 1
             else:
                 running += 1
-    return passed, failed, timeout, running
+        elif st == 'BUILD_FAIL':
+            if _is_done(log):
+                build_fail += 1
+            else:
+                running += 1
+    return passed, failed, timeout, build_fail, running
 
 
 def print_single_result(log_path, test_name, total=None, comp_run_dir=None,
@@ -431,10 +484,11 @@ def print_single_result(log_path, test_name, total=None, comp_run_dir=None,
     _mark_done(log_path, st)
 
     tag = {
-        'PASS':    _c('[ PASS ]', 'green',  'bold', use_color=use_color),
-        'FAIL':    _c('[ FAIL ]', 'red',    'bold', use_color=use_color),
-        'TIMEOUT': _c('[TIMEOUT]', 'yellow', 'bold', use_color=use_color),
-        'NO_LOG':  _c('[NO LOG ]', 'yellow',         use_color=use_color),
+        'PASS':       _c('[ PASS ]',  'green',  'bold', use_color=use_color),
+        'FAIL':       _c('[ FAIL ]',  'red',    'bold', use_color=use_color),
+        'TIMEOUT':    _c('[TIMEOUT]', 'yellow', 'bold', use_color=use_color),
+        'BUILD_FAIL': _c('[ BUILD ]', 'red',    'bold', use_color=use_color),
+        'NO_LOG':     _c('[NO LOG ]', 'yellow',         use_color=use_color),
     }.get(st, f'[{st:^7}]')
 
     print()
@@ -443,13 +497,19 @@ def print_single_result(log_path, test_name, total=None, comp_run_dir=None,
                    f"  sim={r['sim_end_time']:<12}"
                    f"  wall={r['elapsed']}"
                    f"  log: {log_path}")
-    if st in ('FAIL', 'TIMEOUT'):
+    if st in ('FAIL', 'TIMEOUT', 'BUILD_FAIL'):
         print(_c(status_line, 'red', use_color=use_color))
     else:
         print(status_line)
 
     # Failure signatures
-    if st == 'TIMEOUT':
+    if st == 'BUILD_FAIL':
+        print(_c('          Design failed to elaborate — the test never ran', 'red', use_color=use_color))
+        for sig in r['signatures'][:3]:
+            print(_c(f'          {sig}', 'red', use_color=use_color))
+        if len(r['signatures']) > 3:
+            print(_c(f'          ... ({len(r["signatures"]) - 3} more)', 'red', use_color=use_color))
+    elif st == 'TIMEOUT':
         print(_c('          No $finish reached — simulation hit UVM_TIMEOUT', 'yellow', use_color=use_color))
     elif st == 'FAIL':
         for sig in r['signatures'][:3]:
@@ -459,16 +519,24 @@ def print_single_result(log_path, test_name, total=None, comp_run_dir=None,
 
     # Running totals — regression mode only, scoped to REGDIR (current session)
     if comp_run_dir and comp_run_dir.strip():
-        passed, failed, timeout, running = _scan_run_dir(comp_run_dir)
-        completed = passed + failed + timeout
+        passed, failed, timeout, build_fail, running = _scan_run_dir(comp_run_dir)
+        completed = passed + failed + timeout + build_fail
         pending   = max((total or 0) - completed - running, 0)
         total_str = str(total) if total is not None else '?'
-        print(_c(f'          Total={total_str} | Pass={passed} | Fail={failed + timeout}'
+        print(_c(f'          Total={total_str} | Pass={passed} | Fail={failed + timeout + build_fail}'
                  f' | Running={running} | Pending={pending}',
                  'cyan', use_color=use_color))
         if rms_id:
-            push_progress(rms_id, comp_run_dir, total=total, url=rms_url,
-                          counts=(passed, failed, timeout))
+            # Belt and braces around the one step here that talks to another
+            # machine. push() is written not to raise, but this runs once per
+            # test inside the simulator's own recipe, and the status line above
+            # is the output people actually depend on.
+            try:
+                push_progress(rms_id, comp_run_dir, total=total, url=rms_url,
+                              counts=(passed, failed + build_fail, timeout))
+            except Exception as e:
+                print(_c(f'          [RMS] progress update skipped: {e}',
+                         'yellow', use_color=use_color))
     print()
 
 # ── Full regression report ────────────────────────────────────────────────────
@@ -496,9 +564,11 @@ def run_report(root, project_name='', component=None, save_to=None,
         # Tally actuals from the scan so placeholders get real numbers.
         # `running` is 0 here — the group target waits for every sub-make before
         # it reports — so completed tests are the whole session.
-        passed, failed, timeout, _ = _scan_run_dir(reg_dir or os.path.join(root, component or '', 'run'))
-        total  = passed + failed + timeout
-        cmd    = post_cmd.format(total=total, passed=passed, failed=failed + timeout)
+        passed, failed, timeout, build_fail, _ = _scan_run_dir(
+            reg_dir or os.path.join(root, component or '', 'run'))
+        total  = passed + failed + timeout + build_fail
+        cmd    = post_cmd.format(total=total, passed=passed,
+                                 failed=failed + timeout + build_fail)
         # Convert Windows absolute paths (D:\foo\bar) to Cygwin (/cygdrive/d/foo/bar)
         # ONLY when the shell that will run this is a POSIX one.
         #
@@ -551,46 +621,46 @@ def push_to_rms(rms_id, root, component=None, reg_dir=None, url=None):
     from .push_result import derive_status, push
 
     scan_dir = reg_dir or os.path.join(root, component or '', 'run')
-    passed, failed, timeout, _ = _scan_run_dir(scan_dir)
-    total = passed + failed + timeout
+    passed, failed, timeout, build_fail, _ = _scan_run_dir(scan_dir)
+    total = passed + failed + timeout + build_fail
     report = os.path.join(reg_dir, 'report.txt') if reg_dir else None
-    return push(rms_id, total, passed, failed, timeout=timeout, url=url,
+    # The RMS row has no build-failure count, only a `build_fail` run status, so
+    # the tests themselves are reported as failed and the distinction is carried
+    # by the status — which reads `build_fail` when nothing else ran.
+    return push(rms_id, total, passed, failed + build_fail, timeout=timeout, url=url,
                 start=_session_start(reg_dir),
                 log=report if report and os.path.exists(report) else reg_dir,
                 machine_log=reg_dir,
-                status=derive_status(total, passed, failed, timeout))
+                status=derive_status(total, passed, failed, timeout,
+                                     build_fail=build_fail))
 
 
 def push_progress(rms_id, reg_dir, total=None, url=None, counts=None):
-    """Push an in-flight snapshot of a running regression to the RMS.
+    """Update the RMS with an in-flight snapshot of a running regression.
 
     Called from the per-test hook, so the dashboard advances as tests land
     instead of staying empty until the group target finishes — which for a long
-    regression is hours. Each call appends one row, exactly like the final push:
-    the API only ever adds to run_results, so the progress rows are the history
-    of the run and the last row is the outcome.
+    regression is hours. Sent with final=False, so all of these updates and the
+    group's closing push are one row: the server holds it at `running` with no
+    end_time, and only the closing push settles the status and sends the email.
 
-    `total` is the group's declared test count, not the completed count, so a
-    snapshot reads as 12-of-46 rather than as a finished 12-test regression.
-    Status is left to the server while nothing has gone wrong — there is no
-    "running" state in the API to send — and stated explicitly as soon as
-    something has, so a failure is visible before the group ends.
+    `total` is the group's declared test count, not the completed count, so the
+    row reads as 12-of-46 rather than as a finished 12-test regression, and the
+    server's progress bar tracks the run live.
     """
-    from .push_result import derive_status, push
+    from .push_result import push
 
-    passed, failed, timeout = counts if counts else _scan_run_dir(reg_dir)[:3]
-    completed = passed + failed + timeout
-    total     = max(total or 0, completed)
-
-    # The last test to finish would otherwise push a snapshot the group's final
-    # push repeats verbatim seconds later — two rows for one outcome.
-    if completed >= total:
-        return 0
-
-    status = derive_status(total, passed, failed, timeout) if (failed or timeout) else None
+    if counts:
+        passed, failed, timeout = counts
+    else:
+        p, f, t, b, _ = _scan_run_dir(reg_dir)
+        # Build failures ride along in `failed`: the RMS row has no separate
+        # count for them, and an in-flight row carries no status to say it in.
+        passed, failed, timeout = p, f + b, t
+    total = max(total or 0, passed + failed + timeout)
     return push(rms_id, total, passed, failed, timeout=timeout, url=url,
                 start=_session_start(reg_dir), log=reg_dir, machine_log=reg_dir,
-                status=status)
+                final=False)
 
 # ── CLI entry point (invoked from Makefile) ───────────────────────────────────
 
